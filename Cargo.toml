@@ -11,6 +11,10 @@ tokenizers = "0.15"
 hf-hub = "0.3.2"
 anyhow = "1.0"
 serde_json = "1.0.134"
+simplepir = "1.0.1"
 
 [dev-dependencies]
 approx = "0.5.1"
+
+[profile.dev]
+overflow-checks = false
