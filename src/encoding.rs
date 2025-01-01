@@ -1,35 +1,25 @@
 use anyhow::Result;
-use flate2::read::ZlibDecoder;
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
 use simplepir::Matrix;
-use std::io::{Read, Write};
 
 #[derive(Debug)]
-pub struct EncodedString(Vec<u64>);
+pub struct EncodedString(pub Vec<u64>);
 
 impl From<&str> for EncodedString {
     fn from(s: &str) -> Self {
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(s.as_bytes()).unwrap();
-        Self(encoder.finish().unwrap().into_iter().map(|b| b as u64).collect())
+        Self(s.as_bytes().iter().map(|&b| b as u64).collect())
     }
 }
 
 impl From<EncodedString> for String {
     fn from(encoded: EncodedString) -> Self {
-        let bytes: Vec<u8> = encoded.0.iter().map(|&n| n as u8).collect();
-        let mut decoder = ZlibDecoder::new(&bytes[..]);
-        let mut s = String::new();
-        decoder.read_to_string(&mut s).unwrap();
-        s
+        String::from_utf8(encoded.0.iter().map(|&n| n as u8).collect()).unwrap()
     }
 }
 
 pub struct StringMatrix {
-    data: Matrix,
+    pub data: Matrix,
     num_strings: usize,
-}
+} 
 
 impl StringMatrix {
     pub fn new(strings: &[String]) -> Self {
@@ -40,9 +30,9 @@ impl StringMatrix {
         
         let mut matrix_data = vec![vec![0u64; matrix_size]; matrix_size];
         for (i, nums) in encoded.iter().enumerate() {
-            matrix_data[i][0] = nums.0.len() as u64;
+            matrix_data[0][i] = nums.0.len() as u64;
             for (j, &num) in nums.0.iter().enumerate() {
-                matrix_data[i][j + 1] = num;
+                matrix_data[j + 1][i] = num;
             }
         }
         
@@ -57,9 +47,9 @@ impl From<StringMatrix> for Vec<String> {
     fn from(matrix: StringMatrix) -> Self {
         let mut strings = Vec::with_capacity(matrix.num_strings);
         for i in 0..matrix.num_strings {
-            let length = matrix.data.data[i][0] as usize;
+            let length = matrix.data.data[0][i] as usize;
             if length > 0 {
-                let encoded = EncodedString(matrix.data.data[i][1..=length].to_vec());
+                let encoded = EncodedString(matrix.data.data[1..=length].iter().map(|row| row[i]).collect());
                 strings.push(encoded.into());
             } else {
                 strings.push(String::new());
@@ -92,4 +82,6 @@ mod tests {
         let decoded: Vec<String> = matrix.into();
         assert_eq!(original, decoded);
     }
+
+    
 }
