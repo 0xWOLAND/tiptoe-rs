@@ -1,6 +1,7 @@
 pub mod embeddings;
 pub mod utils;
 pub mod encoding;
+pub mod market_data;
 
 pub const SCALE_FACTOR: f32 = 1_000_000.0;
 
