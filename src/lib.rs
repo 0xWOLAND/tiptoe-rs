@@ -23,8 +23,8 @@ mod tests {
             let embedding = embedder.embed(text).unwrap();
             let scaled_embedding = embedding.as_ref().to_vec2::<f32>().unwrap()[0].iter().map(|&x| {
                 const SCALE_FACTOR: f32 = 1_00.0;
-                let scaled = (x + 1.0) * SCALE_FACTOR;
-                scaled.round() as u64
+                let scaled = (x * SCALE_FACTOR).round() as u64;
+                scaled
             }).collect::<Vec<_>>();
             println!("Scaled embedding for '{}': {:?}", text, scaled_embedding);
         }
