@@ -2,6 +2,7 @@ pub mod embeddings;
 pub mod utils;
 pub mod encoding;
 pub mod market_data;
+pub mod clustering;
 
 pub const SCALE_FACTOR: f32 = 1_000_000.0;
 
@@ -17,7 +18,6 @@ mod tests {
     const SECRET_DIMENSION: usize = 10000;
     const MOD_POWER: u8 = 17;
     const PLAIN_MOD: u64 = 2_u64.pow(MOD_POWER as u32);
-
 
     #[test]
     pub fn test_e2e_embeddings() {
@@ -35,7 +35,6 @@ mod tests {
             }).collect::<Vec<_>>();
             println!("Scaled embedding for '{}': {:?}", text, scaled_embedding);
         }
-
 
         let embedding_matrix = strings_to_embedding_matrix(&texts, &embedder).unwrap();
 

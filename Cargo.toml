@@ -12,7 +12,8 @@ hf-hub = "0.3.2"
 anyhow = "1.0"
 serde_json = "1.0.134"
 simplepir = { git = "https://github.com/0xWOLAND/simplepir-rs" }
-ndarray = "0.15"
+ndarray = { version = "0.15", features = ["approx"] }
+ndarray-stats = "0.5"
 rand = { version = "0.8", features = ["std_rng"] }
 rand_chacha = "0.3"
 flate2 = "1.0"
@@ -24,9 +25,16 @@ yahoo_finance_api = "2.1"
 tokio = { version = "1.0", features = ["full"] }
 glob = "0.3"
 ndarray-npy = "0.8"
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+tower = { version = "0.4", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+http-body-util = "0.1"
 
 [dev-dependencies]
 approx = "0.5.1"
+tempfile = "3.8"
 
 [profile.dev]
 overflow-checks = false
