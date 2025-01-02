@@ -79,18 +79,7 @@ mod tests {
         let embedder = TextEmbedder::new()?;
         let tensor = embedder.embed(&prompt)?;
         let embedded_query = crate::utils::scale_to_u64(tensor)?;
-        println!("✓ Created query embedding");
-        
-        // Query embedding database
-        println!("\nQuerying embedding database...");
-        let (client_state_emb, query_cipher_emb) = query(
-            0, // dummy index for embedding query
-            db_side_len,
-            config.secret_dimension,
-            server_hints.0,
-            config.plain_mod
-        );
-        let embedding_answer = query_embedding(base_url, query_cipher_emb.data).await?;
+        let embedding_answer = query_embedding(base_url, embedded_query).await?;
         println!("✓ Got embedding answer");
         
         // Find closest index

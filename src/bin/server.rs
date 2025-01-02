@@ -39,20 +39,8 @@ struct AppState {
 
 fn generate_market_texts(stocks: &HashMap<String, f64>, cryptos: &HashMap<String, f64>) -> Vec<String> {
     let mut texts = Vec::new();
-    
-    // Generate texts for stocks
-    for (name, price) in stocks {
-        texts.push(format!("{} is currently trading at ${:.2}", name, price));
-        texts.push(format!("The stock price of {} is ${:.2} per share", name, price));
-        texts.push(format!("Latest market update: {} shares are valued at ${:.2}", name, price));
-    }
-    
-    // Generate texts for cryptocurrencies
-    for (name, price) in cryptos {
-        texts.push(format!("{} is currently valued at ${:.2}", name, price));
-        texts.push(format!("The cryptocurrency {} is trading at ${:.2}", name, price));
-        texts.push(format!("Latest crypto update: {} price is ${:.2}", name, price));
-    }
+    texts.extend(stocks.iter().map(|(name, price)| format!("{}: ${:.2}", name, price)));
+    texts.extend(cryptos.iter().map(|(name, price)| format!("{}: ${:.2}", name, price)));
     
     texts
 }
@@ -121,10 +109,16 @@ async fn build_databases(texts: &[String]) -> Option<DatabaseState> {
         client_hints: (client_hint_emb, client_hint_txt),
     };
     
+    // Print all texts and their indices
+    println!("\nDatabase contents:");
+    for (i, text) in texts.iter().enumerate() {
+        println!("[{}] {}", i, text);
+    }
+    
     // Only run tests in debug mode
     #[cfg(debug_assertions)]
     {
-        println!("Testing database query...");
+        println!("\nTesting database query...");
         let index = 0;
         let db_side_len = new_state.text_db.side_len();
         let compressed_db = new_state.text_db.compress().unwrap();
