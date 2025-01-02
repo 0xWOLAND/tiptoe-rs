@@ -213,7 +213,8 @@ async fn handle_embedding_query(
     let db_state_opt = state.db_state.lock().unwrap().as_ref().cloned();
     
     if let Some(db_state) = db_state_opt {
-        let compressed_db = db_state.embedding_db.compress().unwrap();
+        let db = &db_state.embedding_db;
+        let compressed_db = db.compress().unwrap();
         let query_vector = Vector::from_vec(request.query_cipher);
         let answer = answer(&compressed_db, &query_vector);
         

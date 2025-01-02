@@ -12,16 +12,27 @@ pub fn strings_to_embedding_matrix(texts: &[String], embedder: &TextEmbedder) ->
     // First convert all embeddings to scaled u64s
     for text in texts {
         let embedding = embedder.embed(text)?;
-        scaled_embeddings.push(scale_to_u64(embedding)?);
+        let embedding_vec = embedding.to_vec2::<f32>()?[0].clone();
+        
+        // Calculate L2 norm
+        let norm: f32 = embedding_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+        
+        // Scale to have norm = SCALE_FACTOR
+        let scaled: Vec<u64> = embedding_vec.iter()
+            .map(|&x| ((x / norm) * SCALE_FACTOR).round() as u64)
+            .collect();
+            
+        scaled_embeddings.push(scaled);
     }
     
+    // Pre-allocate matrix with correct dimensions
     let matrix_size = 384.max(texts.len());
     let mut matrix_data = vec![vec![0u64; matrix_size]; matrix_size];
     
     for (col, embedding) in scaled_embeddings.iter().enumerate() {
-        for (row, &value) in embedding.iter().take(384).enumerate() {
-            matrix_data[row][col] = value;
-        }
+        matrix_data.iter_mut()
+            .zip(embedding.iter().take(384))
+            .for_each(|(row, &value)| row[col] = value);
     }
     
     Ok(Matrix::from_data(matrix_data))
@@ -108,12 +119,14 @@ pub fn kmeans_cluster(data: &Matrix) -> Result<Vec<Vec<u64>>> {
 }
 
 pub fn scale_to_u64(tensor: candle_core::Tensor) -> Result<Vec<u64>> {
-    Ok(tensor.to_vec2::<f32>()?
-        .into_iter()
-        .next()
-        .unwrap()
-        .into_iter()
-        .map(|x| (x * SCALE_FACTOR).round() as u64)
+    let vec = tensor.to_vec2::<f32>()?[0].clone();
+    
+    // Calculate L2 norm
+    let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+    
+    // Scale to have norm = SCALE_FACTOR
+    Ok(vec.iter()
+        .map(|&x| ((x / norm) * SCALE_FACTOR).round() as u64)
         .collect())
 }
 

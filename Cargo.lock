@@ -2653,7 +2653,6 @@ dependencies = [
 [[package]]
 name = "simplepir"
 version = "0.1.0"
-source = "git+https://github.com/0xWOLAND/simplepir-rs#9f51435e760b2404d3d6b3121a450709cf42451d"
 dependencies = [
  "rand",
  "rand_chacha",

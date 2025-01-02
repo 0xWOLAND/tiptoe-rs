@@ -1,23 +1,16 @@
 use anyhow::Result;
-use simplepir::{Matrix, Vector, query, recover_row, Database};
+use simplepir::{regev::{encrypt, gen_secret_key}, query, recover_row, Database, Matrix, Vector};
 use tiptoe_rs::{
-    embeddings::TextEmbedder,
-    encoding::EncodedString,
+    client::{find_closest_index, get_db_config, query_embedding, query_text}, embeddings::TextEmbedder, encoding::EncodedString, utils::scale_to_u64
 };
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let base_url = "http://127.0.0.1:8080";
-    let query_text = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "What is the price of Bitcoin?".to_string());
-    
-    println!("=== Tiptoe Client ===");
-    println!("Query: {}", query_text);
     
     // Get database configuration
-    println!("\nFetching database config...");
-    let config = tiptoe_rs::client::get_db_config(base_url).await?;
+    println!("Fetching database config...");
+    let config = get_db_config(base_url).await?;
     let db_side_len = config.db_side_len.expect("Database not initialized");
     let server_hints = config.server_hints.expect("Server hints not available");
     let client_hints = config.client_hints.expect("Client hints not available");
@@ -25,17 +18,29 @@ async fn main() -> Result<()> {
     
     // Create query embedding
     println!("\nCreating query embedding...");
+    let prompt = "Microsoft Corporation";
     let embedder = TextEmbedder::new()?;
-    let tensor = embedder.embed(&query_text)?;
-    let query_embedding = tiptoe_rs::utils::scale_to_u64(tensor)?;
-    println!("✓ Created query embedding");
+    let tensor = embedder.embed(&prompt)?;
+    let embedded_query = scale_to_u64(tensor)?;
+    let query_vector = Vector::from_vec(embedded_query);
     
-    let embedding_answer = tiptoe_rs::client::query_embedding(base_url, query_embedding).await?;
+    // Encrypt the embedding query
+    let client_hint_matrix_emb = Matrix::from_data(client_hints.0);
+    let secret_key = gen_secret_key(config.secret_dimension, None);
+    let query_cipher = encrypt(&secret_key, &client_hint_matrix_emb, &query_vector, config.plain_mod).1;
+    
+    // Send the encrypted query
+    let embedding_answer = query_embedding(base_url, query_cipher.data).await?;
     println!("✓ Got embedding answer");
     
     // Find closest index
     println!("\nFinding closest text...");
-    let closest_index = tiptoe_rs::client::find_closest_index(&embedding_answer);
+    println!("\nScores for each entry:");
+    for (i, &score) in embedding_answer.iter().enumerate() {
+        println!("[{}] Score: {} ({})", i, score, if score == 0 { "exact match" } else { "different" });
+    }
+    
+    let closest_index = find_closest_index(&embedding_answer);
     println!("✓ Found closest at index: {}", closest_index);
     
     // Query text database
@@ -47,8 +52,7 @@ async fn main() -> Result<()> {
         server_hints.1,
         config.plain_mod
     );
-    let query_data = query_cipher_txt.data.clone();
-    let text_answer = tiptoe_rs::client::query_text(base_url, query_data).await?;
+    let text_answer = query_text(base_url, query_cipher_txt.clone().data).await?;
     println!("✓ Got text answer");
     
     // Recover text
@@ -61,10 +65,9 @@ async fn main() -> Result<()> {
         &query_cipher_txt,
         config.plain_mod
     );
-    println!("text_vector: {:?}", text_vector);
     let encoded = EncodedString(text_vector.data);
     let text: String = encoded.into();
-    println!("\nResult: {}", text);
+    println!("Retrieved text: {}", text);
     
     Ok(())
 } 
