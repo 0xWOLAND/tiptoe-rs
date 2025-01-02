@@ -56,75 +56,121 @@ fn generate_market_texts(stocks: &HashMap<String, f64>, cryptos: &HashMap<String
     texts
 }
 
+async fn build_databases(texts: &[String]) -> Option<DatabaseState> {
+    println!("\nBuilding databases...");
+    
+    // Create embedding database
+    println!("Initializing text embedder...");
+    let embedder = match TextEmbedder::new() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("❌ Failed to initialize embedder: {}", e);
+            return None;
+        }
+    };
+    println!("✓ Text embedder initialized");
+    
+    // Build embedding database
+    println!("Creating embedding database...");
+    let embedding_matrix = match strings_to_embedding_matrix(texts, &embedder) {
+        Ok(matrix) => matrix,
+        Err(e) => {
+            eprintln!("❌ Failed to create embedding matrix: {}", e);
+            return None;
+        }
+    };
+    
+    let embedding_db = match Database::from_matrix(embedding_matrix, MOD_POWER as u8) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("❌ Failed to create embedding database: {}", e);
+            return None;
+        }
+    };
+    
+    let (server_hint_emb, client_hint_emb) = setup(&embedding_db, SECRET_DIMENSION);
+    println!("✓ Embedding database created");
+    
+    // Build text database
+    println!("Creating text database...");
+    let encoded = StringMatrix::new(texts);
+    let text_db = match Database::from_matrix(encoded.data, MOD_POWER as u8) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("❌ Failed to create text database: {}", e);
+            return None;
+        }
+    };
+    
+    // Test compression before proceeding
+    println!("Testing database compression...");
+    if let Err(e) = text_db.compress() {
+        eprintln!("❌ Failed to compress text database: {}", e);
+        return None;
+    }
+    
+    let (server_hint_txt, client_hint_txt) = setup(&text_db, SECRET_DIMENSION);
+    println!("✓ Text database created");
+    
+    // Create new state
+    let new_state = DatabaseState {
+        embedding_db,
+        text_db,
+        server_hints: (server_hint_emb, server_hint_txt),
+        client_hints: (client_hint_emb, client_hint_txt),
+    };
+    
+    // Test query before returning
+    println!("Testing database query...");
+    let index = 0;
+    let db_side_len = new_state.text_db.side_len();
+    let compressed_db = new_state.text_db.compress().unwrap();
+    
+    let (client_state, query_cipher) = query(index, db_side_len, SECRET_DIMENSION, new_state.server_hints.1, PLAIN_MOD);
+    let answer_cipher = answer(&compressed_db, &query_cipher);
+    match recover_row(&client_state, &new_state.client_hints.1, &answer_cipher, &query_cipher, PLAIN_MOD) {
+        record => {
+            let encoded = EncodedString(record.data);
+            let decoded: String = encoded.into();
+            println!("✓ Database query successful");
+            println!("Sample text at index {}: {}", index, decoded);
+            Some(new_state)
+        }
+    }
+}
+
 async fn update_market_data(state: &AppState) {
     println!("\nFetching latest market data...");
     match get_market_prices().await {
         Ok((stocks, cryptos, timestamp)) => {
             println!("✓ Market data fetched successfully");
             
-            // Update market data
+            // Update market data state immediately
+            println!("Updating market data state...");
             *state.last_update.lock().unwrap() = timestamp.clone();
             *state.stock_prices.lock().unwrap() = stocks.clone();
             *state.crypto_prices.lock().unwrap() = cryptos.clone();
             
-            // Generate texts and update databases
+            // Print the current market data
+            let formatted = format_prices(stocks.clone(), cryptos.clone(), timestamp.clone());
+            println!("\nMarket data updated at {}:\n{}", timestamp, formatted);
+            
+            // Generate texts for databases
             println!("Generating market texts...");
             let texts = generate_market_texts(&stocks, &cryptos);
             println!("✓ Generated {} text entries", texts.len());
             
-            // Create embedding database
-            println!("Initializing text embedder...");
-            let embedder = TextEmbedder::new().unwrap();
-            println!("✓ Text embedder initialized");
-            
-            println!("Creating embedding database...");
-            let embedding_matrix = strings_to_embedding_matrix(&texts, &embedder).unwrap();
-            let embedding_db = Database::from_matrix(embedding_matrix, MOD_POWER as u8).unwrap();
-            let (server_hint_emb, client_hint_emb) = setup(&embedding_db, SECRET_DIMENSION);
-            println!("✓ Embedding database created");
-            
-            // Create encoded text database
-            println!("Creating text database...");
-            let encoded = StringMatrix::new(&texts);
-            let text_db = Database::from_matrix(encoded.data, MOD_POWER as u8).unwrap();
-            let (server_hint_txt, client_hint_txt) = setup(&text_db, SECRET_DIMENSION);
-            println!("✓ Text database created");
-            
-            // Update the databases in state
-            println!("Updating database state...");
-            *state.db_state.lock().unwrap() = Some(DatabaseState {
-                embedding_db: embedding_db.clone(),
-                text_db: text_db.clone(),
-                server_hints: (server_hint_emb, server_hint_txt),
-                client_hints: (client_hint_emb, client_hint_txt),
+            // Build databases in a separate task
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                if let Some(new_state) = build_databases(&texts).await {
+                    *state_clone.db_state.lock().unwrap() = Some(new_state);
+                    println!("✓ Database state updated");
+                    println!("\n--- Database update complete ---");
+                }
             });
-            println!("✓ Database state updated");
             
-            // Print the saved market data
-            let formatted = format_prices(
-                stocks,
-                cryptos,
-                timestamp.clone()
-            );
-            println!("\nMarket data updated at {}:\n{}", timestamp, formatted);
-            
-            // Print a sample query from the databases
-            if let Some(ref db_state) = *state.db_state.lock().unwrap() {
-                println!("\nTesting database query...");
-                let index = 0;
-                let db_side_len = db_state.text_db.side_len();
-                
-                // Query the text database
-                let (client_state, query_cipher) = query(index, db_side_len, SECRET_DIMENSION, db_state.server_hints.1, PLAIN_MOD);
-                let compressed_db = db_state.text_db.compress().unwrap();
-                let answer_cipher = answer(&compressed_db, &query_cipher);
-                let record = recover_row(&client_state, &db_state.client_hints.1, &answer_cipher, &query_cipher, PLAIN_MOD);
-                let encoded = EncodedString(record.data);
-                let decoded: String = encoded.into();
-                println!("✓ Database query successful");
-                println!("Sample text at index {}: {}", index, decoded);
-            }
-            println!("\n--- Update complete ---");
+            println!("Database build started in background");
         }
         Err(e) => {
             eprintln!("❌ Failed to update market data: {}", e);
