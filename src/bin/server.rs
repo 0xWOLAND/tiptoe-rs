@@ -121,23 +121,27 @@ async fn build_databases(texts: &[String]) -> Option<DatabaseState> {
         client_hints: (client_hint_emb, client_hint_txt),
     };
     
-    // Test query before returning
-    println!("Testing database query...");
-    let index = 0;
-    let db_side_len = new_state.text_db.side_len();
-    let compressed_db = new_state.text_db.compress().unwrap();
-    
-    let (client_state, query_cipher) = query(index, db_side_len, SECRET_DIMENSION, new_state.server_hints.1, PLAIN_MOD);
-    let answer_cipher = answer(&compressed_db, &query_cipher);
-    match recover_row(&client_state, &new_state.client_hints.1, &answer_cipher, &query_cipher, PLAIN_MOD) {
-        record => {
-            let encoded = EncodedString(record.data);
-            let decoded: String = encoded.into();
-            println!("✓ Database query successful");
-            println!("Sample text at index {}: {}", index, decoded);
-            Some(new_state)
+    // Only run tests in debug mode
+    #[cfg(debug_assertions)]
+    {
+        println!("Testing database query...");
+        let index = 0;
+        let db_side_len = new_state.text_db.side_len();
+        let compressed_db = new_state.text_db.compress().unwrap();
+        
+        let (client_state, query_cipher) = query(index, db_side_len, SECRET_DIMENSION, new_state.server_hints.1, PLAIN_MOD);
+        let answer_cipher = answer(&compressed_db, &query_cipher);
+        match recover_row(&client_state, &new_state.client_hints.1, &answer_cipher, &query_cipher, PLAIN_MOD) {
+            record => {
+                let encoded = EncodedString(record.data);
+                let decoded: String = encoded.into();
+                println!("✓ Database query successful");
+                println!("Sample text at index {}: {}", index, decoded);
+            }
         }
     }
+    
+    Some(new_state)
 }
 
 async fn update_market_data(state: &AppState) {
@@ -205,33 +209,47 @@ struct QueryRequest {
 
 #[derive(Debug, Serialize)]
 struct QueryResponse {
-    embedding_answer: Vec<u64>,
-    text_answer: Vec<u64>,
+    answer: Vec<u64>,
 }
 
-async fn handle_query(
+async fn handle_embedding_query(
     State(state): State<AppState>,
     Json(request): Json<QueryRequest>,
 ) -> Json<QueryResponse> {
-    // Quick lock to check and clone if needed
     let db_state_opt = state.db_state.lock().unwrap().as_ref().cloned();
     
     if let Some(db_state) = db_state_opt {
-        let compressed_embedding_db = db_state.embedding_db.compress().unwrap();
-        let compressed_text_db = db_state.text_db.compress().unwrap();
-        
+        let compressed_db = db_state.embedding_db.compress().unwrap();
         let query_vector = Vector::from_vec(request.query_cipher);
-        let embedding_answer = answer(&compressed_embedding_db, &query_vector);
-        let text_answer = answer(&compressed_text_db, &query_vector);
+        let answer = answer(&compressed_db, &query_vector);
         
         Json(QueryResponse {
-            embedding_answer: embedding_answer.data,
-            text_answer: text_answer.data,
+            answer: answer.data,
         })
     } else {
         Json(QueryResponse {
-            embedding_answer: vec![],
-            text_answer: vec![],
+            answer: vec![],
+        })
+    }
+}
+
+async fn handle_text_query(
+    State(state): State<AppState>,
+    Json(request): Json<QueryRequest>,
+) -> Json<QueryResponse> {
+    let db_state_opt = state.db_state.lock().unwrap().as_ref().cloned();
+    
+    if let Some(db_state) = db_state_opt {
+        let compressed_db = db_state.text_db.compress().unwrap();
+        let query_vector = Vector::from_vec(request.query_cipher);
+        let answer = answer(&compressed_db, &query_vector);
+        
+        Json(QueryResponse {
+            answer: answer.data,
+        })
+    } else {
+        Json(QueryResponse {
+            answer: vec![],
         })
     }
 }
@@ -312,7 +330,8 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/market-data", get(get_market_data))
-        .route("/query", post(handle_query))
+        .route("/query/embedding", post(handle_embedding_query))
+        .route("/query/text", post(handle_text_query))
         .route("/db-config", get(get_db_config))
         .with_state(state);
     println!("✓ Routes configured");
