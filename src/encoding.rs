@@ -3,7 +3,6 @@ use simplepir::Matrix;
 
 #[derive(Debug)]
 pub struct EncodedString(pub Vec<u64>);
-
 impl From<&str> for EncodedString {
     fn from(s: &str) -> Self {
         Self(s.as_bytes().iter().map(|&b| b as u64).collect())
