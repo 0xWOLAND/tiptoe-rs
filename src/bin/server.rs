@@ -1,10 +1,11 @@
 use axum::{
-    routing::get,
+    routing::{get, post},
     Router,
     Json,
     extract::State,
 };
 use std::{net::SocketAddr, sync::Mutex, collections::HashMap};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::signal;
 use tiptoe_rs::{
@@ -13,7 +14,7 @@ use tiptoe_rs::{
     utils::strings_to_embedding_matrix,
     encoding::{StringMatrix, EncodedString},
 };
-use simplepir::{Database, Matrix, setup, query, answer, recover_row};
+use simplepir::{Database, Matrix, Vector, setup, query, answer, recover_row};
 
 // Modulus must be less than 2^21 for compression to work
 const MOD_POWER: u32 = 17;
@@ -163,8 +164,11 @@ async fn update_market_data(state: &AppState) {
             // Build databases in a separate task
             let state_clone = state.clone();
             tokio::spawn(async move {
+                println!("Building new databases...");
                 if let Some(new_state) = build_databases(&texts).await {
-                    *state_clone.db_state.lock().unwrap() = Some(new_state);
+                    // Only lock when we're ready to update
+                    let mut db_state = state_clone.db_state.lock().unwrap();
+                    *db_state = Some(new_state);
                     println!("✓ Database state updated");
                     println!("\n--- Database update complete ---");
                 }
@@ -192,6 +196,81 @@ async fn get_market_data(State(state): State<AppState>) -> Json<serde_json::Valu
     
     let formatted = format_prices(stocks, cryptos, timestamp);
     Json(serde_json::from_str(&formatted).unwrap())
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryRequest {
+    query_cipher: Vec<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryResponse {
+    embedding_answer: Vec<u64>,
+    text_answer: Vec<u64>,
+}
+
+async fn handle_query(
+    State(state): State<AppState>,
+    Json(request): Json<QueryRequest>,
+) -> Json<QueryResponse> {
+    // Quick lock to check and clone if needed
+    let db_state_opt = state.db_state.lock().unwrap().as_ref().cloned();
+    
+    if let Some(db_state) = db_state_opt {
+        let compressed_embedding_db = db_state.embedding_db.compress().unwrap();
+        let compressed_text_db = db_state.text_db.compress().unwrap();
+        
+        let query_vector = Vector::from_vec(request.query_cipher);
+        let embedding_answer = answer(&compressed_embedding_db, &query_vector);
+        let text_answer = answer(&compressed_text_db, &query_vector);
+        
+        Json(QueryResponse {
+            embedding_answer: embedding_answer.data,
+            text_answer: text_answer.data,
+        })
+    } else {
+        Json(QueryResponse {
+            embedding_answer: vec![],
+            text_answer: vec![],
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DatabaseConfig {
+    mod_power: u32,
+    secret_dimension: usize,
+    plain_mod: u64,
+    db_side_len: Option<usize>,
+    server_hints: Option<(u64, u64)>,
+    client_hints: Option<(Vec<Vec<u64>>, Vec<Vec<u64>>)>,
+}
+
+async fn get_db_config(State(state): State<AppState>) -> Json<DatabaseConfig> {
+    // Quick lock to check and clone if needed
+    let db_state_opt = state.db_state.lock().unwrap().as_ref().cloned();
+    
+    let (db_side_len, server_hints, client_hints) = if let Some(db_state) = db_state_opt {
+        (
+            Some(db_state.text_db.side_len()),
+            Some(db_state.server_hints),
+            Some((
+                db_state.client_hints.0.data.clone(),
+                db_state.client_hints.1.data.clone()
+            ))
+        )
+    } else {
+        (None, None, None)
+    };
+
+    Json(DatabaseConfig {
+        mod_power: MOD_POWER,
+        secret_dimension: SECRET_DIMENSION,
+        plain_mod: PLAIN_MOD,
+        db_side_len,
+        server_hints,
+        client_hints,
+    })
 }
 
 #[tokio::main]
@@ -233,6 +312,8 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/market-data", get(get_market_data))
+        .route("/query", post(handle_query))
+        .route("/db-config", get(get_db_config))
         .with_state(state);
     println!("✓ Routes configured");
 
