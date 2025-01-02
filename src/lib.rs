@@ -3,6 +3,7 @@ pub mod utils;
 pub mod encoding;
 pub mod market_data;
 pub mod clustering;
+pub mod client;
 
 pub const SCALE_FACTOR: f32 = 1_000_000.0;
 

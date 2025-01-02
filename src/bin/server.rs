@@ -318,7 +318,7 @@ async fn main() {
     println!("\nStarting background update task...");
     let state_clone = state.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
         println!("✓ Background task started");
         loop {
             interval.tick().await;

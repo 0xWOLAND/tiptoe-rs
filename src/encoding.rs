@@ -6,43 +6,13 @@ pub struct EncodedString(pub Vec<u64>);
 
 impl From<&str> for EncodedString {
     fn from(s: &str) -> Self {
-        let bytes = s.as_bytes();
-        // Store length followed by packed bytes
-        let mut data = vec![bytes.len() as u64];
-        
-        // Pack 8 bytes into each u64 (since 8 * 8 = 64 bits)
-        for chunk in bytes.chunks(8) {
-            let mut packed = 0u64;
-            for (i, &byte) in chunk.iter().enumerate() {
-                packed |= (byte as u64) << (i * 8);
-            }
-            data.push(packed);
-        }
-        Self(data)
+        Self(std::iter::once(s.len() as u64).chain(s.bytes().map(|b| b as u64)).collect())
     }
 }
 
 impl From<EncodedString> for String {
-    fn from(encoded: EncodedString) -> Self {
-        if encoded.0.is_empty() {
-            return String::new();
-        }
-        
-        let len = encoded.0[0] as usize;
-        let mut bytes = Vec::with_capacity(len);
-        
-        // Unpack bytes from each u64
-        for &packed in encoded.0.iter().skip(1) {
-            for i in 0..8 {
-                if bytes.len() >= len {
-                    break;
-                }
-                let byte = ((packed >> (i * 8)) & 0xFF) as u8;
-                bytes.push(byte);
-            }
-        }
-        
-        String::from_utf8(bytes).unwrap_or_default()
+    fn from(e: EncodedString) -> Self {
+        String::from_utf8(e.0.clone().into_iter().skip(1).take(e.0[0] as usize).map(|x| x as u8).collect()).unwrap()
     }
 }
 

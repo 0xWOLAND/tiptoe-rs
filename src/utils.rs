@@ -7,34 +7,23 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 
 pub fn strings_to_embedding_matrix(texts: &[String], embedder: &TextEmbedder) -> Result<Matrix> {
-    if texts.is_empty() {
-        anyhow::bail!("No texts provided for embedding");
-    }
-
-    let mut embeddings_array = Array2::zeros((texts.len(), 384));
+    let mut scaled_embeddings = Vec::with_capacity(texts.len());
     
-    for (i, text) in texts.iter().enumerate() {
+    // First convert all embeddings to scaled u64s
+    for text in texts {
         let embedding = embedder.embed(text)?;
-        let embedding_vec = embedding.to_vec2::<f32>()?[0].clone();
-        embeddings_array.row_mut(i).assign(&ndarray::ArrayView1::from(&embedding_vec));
+        scaled_embeddings.push(scale_to_u64(embedding)?);
     }
-
-    let mut final_array = Array2::zeros((384, 384));
-    final_array
-        .slice_mut(ndarray::s![..embeddings_array.ncols(), ..texts.len()])
-        .assign(&embeddings_array.t());
-
-    let matrix_data: Vec<Vec<u64>> = final_array
-        .axis_iter(Axis(0))
-        .map(|row| {
-            row.iter()
-               .map(|&x| {
-                    (x * SCALE_FACTOR).round() as u64
-               })
-               .collect()
-        })
-        .collect();
-
+    
+    let matrix_size = 384.max(texts.len());
+    let mut matrix_data = vec![vec![0u64; matrix_size]; matrix_size];
+    
+    for (col, embedding) in scaled_embeddings.iter().enumerate() {
+        for (row, &value) in embedding.iter().take(384).enumerate() {
+            matrix_data[row][col] = value;
+        }
+    }
+    
     Ok(Matrix::from_data(matrix_data))
 }
 
@@ -115,6 +104,16 @@ pub fn kmeans_cluster(data: &Matrix) -> Result<Vec<Vec<u64>>> {
     Ok(centroids
         .outer_iter()
         .map(|row| row.iter().map(|&x| x.round() as u64).collect())
+        .collect())
+}
+
+pub fn scale_to_u64(tensor: candle_core::Tensor) -> Result<Vec<u64>> {
+    Ok(tensor.to_vec2::<f32>()?
+        .into_iter()
+        .next()
+        .unwrap()
+        .into_iter()
+        .map(|x| (x * SCALE_FACTOR).round() as u64)
         .collect())
 }
 
