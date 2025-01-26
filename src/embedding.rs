@@ -53,11 +53,12 @@ impl BertEmbedder {
     fn quantize_to_u64(&self, embeddings: &Tensor) -> Result<DVector<u64>> {
         let embeddings = embeddings.squeeze(0)?;
         let values = embeddings.to_vec1::<f32>()?;
-
+        
+        let max_value = 1 << 17;  // 131072
         let quantized: Vec<u64> = values.iter()
             .map(|&x| {
-                let shifted = (x + 1.0) / 2.0;
-                (shifted * u64::MAX as f32) as u64
+                let shifted = (x + 1.0) / 2.0;  // Shifts from [-1,1] to [0,1]
+                (shifted * max_value as f32) as u64  // Scale to [0,131072]
             })
             .collect();
             
