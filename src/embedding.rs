@@ -52,20 +52,16 @@ impl BertEmbedder {
     fn quantize_to_u64(&self, embeddings: &Tensor) -> Result<DVector<u64>> {
         // First squeeze out the batch dimension to get a [384] tensor
         let embeddings = embeddings.squeeze(0)?;
-        
-        // Get the float values
         let values = embeddings.to_vec1::<f32>()?;
-        
-        // Find min and max for scaling
-        let min_val = values.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-        let max_val = values.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-        let range = max_val - min_val;
-        
-        // Scale to u64::MAX range and quantize
+
+        // Since the embeddings are already L2 normalized, we just need to shift them 
+        // from [-1,1] to [0,1] before quantizing to preserve the dot product properties
         let quantized: Vec<u64> = values.iter()
             .map(|&x| {
-                let normalized = (x - min_val) / range;
-                (normalized * u64::MAX as f32) as u64
+                // Shift from [-1,1] to [0,1]
+                let shifted = (x + 1.0) / 2.0;
+                // Scale to u64 range
+                (shifted * u64::MAX as f32) as u64
             })
             .collect();
             
@@ -98,6 +94,32 @@ impl BertEmbedder {
         // Convert to quantized u64 vector
         self.quantize_to_u64(&embeddings)
     }
+
+    pub fn compute_similarity(v1: &DVector<u64>, v2: &DVector<u64>) -> Result<f64> {
+        if v1.nrows() != v2.nrows() {
+            return Err(E::msg(format!(
+                "Vector dimensions don't match: {} vs {}",
+                v1.nrows(),
+                v2.nrows()
+            )));
+        }
+
+        // Convert back from [0,1] to [-1,1] range and compute dot product
+        let dot_product: f64 = v1
+            .iter()
+            .zip(v2.iter())
+            .map(|(&x, &y)| {
+                let x_norm = x as f64 / u64::MAX as f64;
+                let y_norm = y as f64 / u64::MAX as f64;
+                // Shift back from [0,1] to [-1,1]
+                let x_shifted = 2.0 * x_norm - 1.0;
+                let y_shifted = 2.0 * y_norm - 1.0;
+                x_shifted * y_shifted
+            })
+            .sum();
+
+        Ok(dot_product)
+    }
 }
 
 #[cfg(test)]
@@ -107,7 +129,7 @@ mod tests {
     #[test]
     fn test_embedding_shape() -> Result<()> {
         let embedder = BertEmbedder::new()?;
-        let embedding: DVector<u64> = embedder.encode_text("test text")?;
+        let embedding = embedder.encode_text("test text")?;
         
         // MiniLM-L6-v2 has 384-dimensional embeddings
         assert_eq!(embedding.nrows(), 384);
@@ -117,10 +139,34 @@ mod tests {
     #[test]
     fn test_quantization_range() -> Result<()> {
         let embedder = BertEmbedder::new()?;
-        let embedding: DVector<u64> = embedder.encode_text("test text")?;
+        let embedding = embedder.encode_text("test text")?;
         
         // Check that values are properly quantized to u64 range
         assert!(embedding.iter().all(|&x| x <= u64::MAX));
+        Ok(())
+    }
+
+    #[test]
+    fn test_similarity() -> Result<()> {
+        let embedder = BertEmbedder::new()?;
+        
+        // Test identical sentences (should have similarity very close to 1)
+        let text1 = "The cat sits outside";
+        let emb1 = embedder.encode_text(text1)?;
+        let emb2 = embedder.encode_text(text1)?;
+        let similarity = BertEmbedder::compute_similarity(&emb1, &emb2)?;
+        println!("Identical text similarity: {}", similarity);
+        assert!(similarity > 0.99, "Identical text similarity should be close to 1");
+
+        // Test with dissimilar sentences
+        let text3 = "Complex quantum physics theories";
+        let emb3 = embedder.encode_text(text3)?;
+        let dissimilar_score = BertEmbedder::compute_similarity(&emb1, &emb3)?;
+        println!("Dissimilar text similarity: {}", dissimilar_score);
+        
+        assert!(similarity > dissimilar_score);
+        assert!(dissimilar_score >= -1.0 && dissimilar_score <= 1.0);
+        
         Ok(())
     }
 }
