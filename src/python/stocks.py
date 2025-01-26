@@ -28,7 +28,7 @@ if response.status_code == 200:
         }
         for item in data.get("body", [])
     ]
-    print(results)
+    print(str(results).replace("'", '"'))
 
 else:
     print(f"Failed to fetch data: {response.status_code}")
