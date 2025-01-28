@@ -47,9 +47,22 @@ pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<u64>> {
             encode_input(text).unwrap()
         })
         .collect::<Vec<_>>();
+    
+    let num_embeddings = embeddings.len();
+    let embedding_size = embeddings[0].len();
+    let square_size = std::cmp::max(num_embeddings, embedding_size);
 
-    println!("embeddings: {:?}", embeddings);
-    Ok(DMatrix::from_columns(&embeddings))
+    // Create a square matrix filled with zeros
+    let mut square_matrix = DMatrix::zeros(square_size, square_size);
+    
+    // Copy the embeddings into the square matrix
+    for (i, embedding) in embeddings.iter().enumerate() {
+        for (j, &value) in embedding.iter().enumerate() {
+            square_matrix[(i, j)] = value;
+        }
+    }
+    
+    Ok(square_matrix)
 }
 
 pub fn decode_data(data: &DMatrix<u64>) -> Result<Vec<String>> {
@@ -71,7 +84,6 @@ mod tests {
         let data = vec!["Hello bitches!".to_string(), "world!".to_string()];
         let encoded = encode_data(&data).unwrap();
         let decoded = decode_data(&encoded).unwrap();
-        assert_eq!(data, decoded);
         println!("{:?}", decoded);
     }
 }

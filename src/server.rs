@@ -7,21 +7,71 @@ use simplepir::*;
 
 use crate::{embedding::BertEmbedder, utils::encode_data};
 
-pub struct Database {
-    embeddings: DMatrix<u64>,
+pub trait Database {
+    fn new() -> Self;
+    fn update(&mut self) -> Result<()>;
+    fn respond(&self, query: &DVector<u64>) -> Result<DVector<u64>>;
+    fn params(&self) -> &SimplePIRParams;
+    fn hint(&self) -> &DMatrix<u64>;
+    fn a(&self) -> &DMatrix<u64>;
+}
+
+pub struct SimplePirDatabase {
     params: Option<SimplePIRParams>,
-    encoded_data: DMatrix<u64>,
+    data: DMatrix<u64>,
     hint: Option<DMatrix<u64>>,
     a: Option<DMatrix<u64>>
 }
 
-impl Database {
-    pub fn new() -> Self {
-        Self { embeddings: DMatrix::zeros(0, 0), params: None, encoded_data: DMatrix::zeros(0, 0), hint: None, a: None }
+impl SimplePirDatabase {
+    pub fn new(data: DMatrix<u64>) -> Self {
+        Self { data, params: None, hint: None, a: None }
     }
 
-    pub fn update(&mut self) -> Result<()> {
-        let embedder = BertEmbedder::new().unwrap();
+    pub fn update_db(&mut self, data: DMatrix<u64>) -> Result<()> {
+        self.data = data;
+
+        let params = gen_params(self.data.nrows(), self.data.ncols(), 17);
+        let (hint, a) = gen_hint(&params, &self.data);
+
+        self.params = Some(params);
+        self.hint = Some(hint);
+        self.a = Some(a);
+
+        Ok(())
+    }
+
+    pub fn respond(&self, query: &DVector<u64>) -> Result<DVector<u64>> {
+        let params = self.params.as_ref().unwrap();
+        let answer = process_query(&self.data, query, params.q);
+
+        Ok(answer)
+    }
+
+    fn params(&self) -> &SimplePIRParams {
+        self.params.as_ref().unwrap()
+    }
+
+    fn hint(&self) -> &DMatrix<u64> {
+        self.hint.as_ref().unwrap()
+    }
+
+    fn a(&self) -> &DMatrix<u64> {
+        self.a.as_ref().unwrap()
+    }
+}
+
+pub struct EmbeddingDatabase {
+    db: SimplePirDatabase,
+    embedder: BertEmbedder
+}
+
+impl Database for EmbeddingDatabase {
+    fn new() -> Self {
+        Self { db: SimplePirDatabase::new(DMatrix::zeros(1, 1)), embedder: BertEmbedder::new().unwrap() }
+    }
+
+    fn update(&mut self) -> Result<()> {
         let stock_json = Command::new("python").arg("src/python/stocks.py").output().unwrap();
 
         if !stock_json.status.success() {
@@ -30,37 +80,72 @@ impl Database {
 
         let stock_json = String::from_utf8(stock_json.stdout).unwrap();
         let stock_json: Vec<Value> = serde_json::from_str(&stock_json)?;
-        let embeddings = embedder.encode_json_array(&stock_json)?;
-        let params = gen_params(embeddings.nrows(), 2048, 17);
-        let (hint, a) = gen_hint(&params, &embeddings);
 
-        let encoded_data = encode_data(&stock_json.iter().map(|v| v.to_string()).collect::<Vec<_>>())?;
+        let embeddings = self.embedder.embed_json_array(&stock_json)?;
+        assert_eq!(embeddings.nrows(), embeddings.ncols());
 
-        self.embeddings = embeddings;
-        self.encoded_data = encoded_data;
-        self.params = Some(params);
-        self.hint = Some(hint);
-        self.a = Some(a);
-        
+        self.db.update_db(embeddings)?;
+
         Ok(())
     }
 
-    pub fn response(&self, query: &DVector<u64>) -> Result<DVector<u64>> {
-        let params = self.params.as_ref().unwrap();
-        let answer = process_query(&self.embeddings, query, params.q);
+    fn respond(&self, query: &DVector<u64>) -> Result<DVector<u64>> {
+        self.db.respond(query)
+    }
 
-        Ok(answer)
+    fn params(&self) -> &SimplePIRParams {
+        self.db.params()
+    }
+
+    fn hint(&self) -> &DMatrix<u64> {
+        self.db.hint()
+    }
+
+    fn a(&self) -> &DMatrix<u64> {
+        self.db.a()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub struct EncodingDatabase {
+    db: SimplePirDatabase,
+}
 
-    #[test]
-    fn test_update() {
-        let mut db = Database::new();
-        db.update().unwrap();
-        println!("{:?}", db.embeddings);
+impl Database for EncodingDatabase {
+    fn new() -> Self {
+        Self { db: SimplePirDatabase::new(DMatrix::zeros(1, 1)) }
+    }
+
+    fn update(&mut self) -> Result<()> {
+        let stock_json = Command::new("python").arg("src/python/stocks.py").output().unwrap();
+
+        if !stock_json.status.success() {
+            return Err(anyhow::anyhow!("Failed to update database"));
+        }
+
+        let stock_json = String::from_utf8(stock_json.stdout).unwrap();
+        let stock_json: Vec<Value> = serde_json::from_str(&stock_json)?;
+
+        let encodings = encode_data(&stock_json.iter().map(|v| v.to_string()).collect::<Vec<String>>())?;
+        assert_eq!(encodings.nrows(), encodings.ncols());
+
+        self.db.update_db(encodings)?;
+
+        Ok(())
+    }
+
+    fn respond(&self, query: &DVector<u64>) -> Result<DVector<u64>> {
+        self.db.respond(query)
+    }
+
+    fn params(&self) -> &SimplePIRParams {
+        self.db.params()
+    }
+
+    fn hint(&self) -> &DMatrix<u64> {
+        self.db.hint()
+    }
+
+    fn a(&self) -> &DMatrix<u64> {
+        self.db.a()
     }
 }

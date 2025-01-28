@@ -2254,7 +2254,6 @@ dependencies = [
 [[package]]
 name = "simplepir"
 version = "0.1.0"
-source = "git+https://github.com/0xWOLAND/simplepir-rs#2c4403f182305537c4e960fe115e9bafd9bf9a23"
 dependencies = [
  "nalgebra",
  "rand",
