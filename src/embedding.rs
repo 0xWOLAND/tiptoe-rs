@@ -65,7 +65,7 @@ impl BertEmbedder {
         Ok(DVector::from_vec(quantized))
     }
 
-    pub fn encode_json_array(&self, json: &Vec<Value>) -> Result<DMatrix<u64>> {
+    pub fn embed_json_array(&self, json: &Vec<Value>) -> Result<DMatrix<u64>> {
         let embeddings = json.iter().map(|v| self.encode_text(&v.to_string())).collect::<Result<Vec<_>>>()?;
 
         let dim = std::cmp::max(embeddings[0].nrows(), embeddings.len());
