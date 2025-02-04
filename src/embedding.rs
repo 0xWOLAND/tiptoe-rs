@@ -3,6 +3,7 @@ use candle::{Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::{api::sync::Api, Repo, RepoType};
+use num_bigint::BigInt;
 use serde_json::Value;
 use tokenizers::Tokenizer;
 use nalgebra::{DMatrix, DVector};
@@ -50,22 +51,21 @@ impl BertEmbedder {
         Ok(v.broadcast_div(&v.sqr()?.sum_keepdim(1)?.sqrt()?)?)
     }
 
-    fn quantize_to_u64(&self, embeddings: &Tensor) -> Result<DVector<u64>> {
+    fn quantize_to_u64(&self, embeddings: &Tensor) -> Result<DVector<BigInt>> {
         let embeddings = embeddings.squeeze(0)?;
         let values = embeddings.to_vec1::<f32>()?;
         
-        let max_value = 1 << 17;  // 131072
-        let quantized: Vec<u64> = values.iter()
+        let max_value = 1 << 8;  // 131072
+        let quantized: Vec<BigInt> = values.iter()
             .map(|&x| {
-                let shifted = (x + 1.0) / 2.0;  // Shifts from [-1,1] to [0,1]
-                (shifted * max_value as f32) as u64  // Scale to [0,131072]
+                BigInt::from((x * max_value as f32) as u64)
             })
             .collect();
             
         Ok(DVector::from_vec(quantized))
     }
 
-    pub fn embed_json_array(&self, json: &Vec<Value>) -> Result<DMatrix<u64>> {
+    pub fn embed_json_array(&self, json: &Vec<Value>) -> Result<DMatrix<BigInt>> {
         let embeddings = json.iter().map(|v| self.encode_text(&v.to_string())).collect::<Result<Vec<_>>>()?;
 
         let dim = std::cmp::max(embeddings[0].nrows(), embeddings.len());
@@ -78,7 +78,7 @@ impl BertEmbedder {
         Ok(out)
     }
 
-    pub fn encode_text(&self, text: &str) -> Result<DVector<u64>> {
+    pub fn encode_text(&self, text: &str) -> Result<DVector<BigInt>> {
         let tokens = self
             .tokenizer
             .encode(text, true)
@@ -98,34 +98,12 @@ impl BertEmbedder {
         
         self.quantize_to_u64(&embeddings)
     }
-
-    pub fn compute_similarity(v1: &DVector<u64>, v2: &DVector<u64>) -> Result<f64> {
-        if v1.nrows() != v2.nrows() {
-            return Err(E::msg(format!(
-                "Vector dimensions don't match: {} vs {}",
-                v1.nrows(),
-                v2.nrows()
-            )));
-        }
-
-        let dot_product: f64 = v1
-            .iter()
-            .zip(v2.iter())
-            .map(|(&x, &y)| {
-                let x_norm = x as f64 / u64::MAX as f64;
-                let y_norm = y as f64 / u64::MAX as f64;
-                let x_shifted = 2.0 * x_norm - 1.0;
-                let y_shifted = 2.0 * y_norm - 1.0;
-                x_shifted * y_shifted
-            })
-            .sum();
-
-        Ok(dot_product)
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use simplepir::{gen_hint, gen_params, generate_query, process_query, recover};
+
     use super::*;
 
     #[test]
@@ -137,34 +115,38 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_quantization_range() -> Result<()> {
-        let embedder = BertEmbedder::new()?;
-        let embedding = embedder.encode_text("test text")?;
-        
-        assert!(embedding.iter().all(|&x| x <= u64::MAX));
-        Ok(())
-    }
 
     #[test]
-    fn test_similarity() -> Result<()> {
-        let embedder = BertEmbedder::new()?;
+    fn test_embedding() {
+        let expected_idx = 2;
+    
+        let embedder = BertEmbedder::new().unwrap();
+        let text = ["Lorem ipsum odor amet, consectetuer adipiscing elit", " Conubia elementum taciti dapibus vestibulum mattis primis", " Facilisis fames justo ultricies pharetra rhoncus", " Nam vel mi aptent turpis purus fusce purus", " Pretium ultrices torquent vulputate venenatis magnis vitae tempor semper torquent", " Habitant suspendisse nascetur in quis adipiscing"];
+        let embeddings = text.iter().map(|v| embedder.encode_text(&v)).collect::<Result<Vec<_>>>().unwrap();
         
-        let text1 = "The cat sits outside";
-        let emb1 = embedder.encode_text(text1)?;
-        let emb2 = embedder.encode_text(text1)?;
-        let similarity = BertEmbedder::compute_similarity(&emb1, &emb2)?;
-        println!("Identical text similarity: {}", similarity);
-        assert!(similarity > 0.99, "Identical text similarity should be close to 1");
+        // Print dot products
+        let query_embedding = embedder.encode_text(text[expected_idx]).unwrap();
+    
+        let dim = std::cmp::max(embeddings[0].nrows(), embeddings.len());
+        let mut db = DMatrix::zeros(dim, dim);
+    
+        for (i, embedding) in embeddings.iter().enumerate() {
+            // db.column_mut(i).copy_from_slice(embedding.as_slice());
+            db.row_mut(i).copy_from_slice(embedding.as_slice());
+        }
 
-        let text3 = "Complex quantum physics theories";
-        let emb3 = embedder.encode_text(text3)?;
-        let dissimilar_score = BertEmbedder::compute_similarity(&emb1, &emb3)?;
-        println!("Dissimilar text similarity: {}", dissimilar_score);
+        println!("db: {:?}", db.clone() * query_embedding);
+    
+        let query_vector = embedder.encode_text(text[expected_idx]).unwrap();
         
-        assert!(similarity > dissimilar_score);
-        assert!(dissimilar_score >= -1.0 && dissimilar_score <= 1.0);
-        
-        Ok(())
+        let params = gen_params(db.nrows(), 2048, 17);
+        let (hint, a) = gen_hint(&params, &db);
+        let (s, query) = generate_query(&params, &query_vector, &a);
+        let answer = process_query(&db, &query, params.q);
+        let result: DVector<BigInt> = recover(&hint, &s, &answer, &params);
+    
+        let (max_idx, _) = result.argmax();
+        println!("result: {:?}", result);
+        println!("max_idx: {:?}", max_idx);
     }
 }

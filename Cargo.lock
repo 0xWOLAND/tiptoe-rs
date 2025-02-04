@@ -1554,6 +1554,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-bigint"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
+dependencies = [
+ "num-integer",
+ "num-traits",
+ "rand",
+]
+
+[[package]]
 name = "num-complex"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2256,6 +2267,8 @@ name = "simplepir"
 version = "0.1.0"
 dependencies = [
  "nalgebra",
+ "num-bigint",
+ "num-traits",
  "rand",
  "rand_chacha",
  "rand_distr",
@@ -2486,6 +2499,8 @@ dependencies = [
  "candle-transformers",
  "hf-hub",
  "nalgebra",
+ "num-bigint",
+ "num-traits",
  "serde_json",
  "simplepir",
  "tokenizers",

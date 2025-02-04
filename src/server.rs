@@ -2,6 +2,7 @@ use std::process::Command;
 
 use anyhow::Result;
 use nalgebra::{DMatrix, DVector};
+use num_bigint::BigInt;
 use serde_json::Value;
 use simplepir::*;
 
@@ -10,25 +11,25 @@ use crate::{embedding::BertEmbedder, utils::encode_data};
 pub trait Database {
     fn new() -> Self;
     fn update(&mut self) -> Result<()>;
-    fn respond(&self, query: &DVector<u64>) -> Result<DVector<u64>>;
+    fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>>;
     fn params(&self) -> &SimplePIRParams;
-    fn hint(&self) -> &DMatrix<u64>;
-    fn a(&self) -> &DMatrix<u64>;
+    fn hint(&self) -> &DMatrix<BigInt>;
+    fn a(&self) -> &DMatrix<BigInt>;
 }
 
 pub struct SimplePirDatabase {
     params: Option<SimplePIRParams>,
-    data: DMatrix<u64>,
-    hint: Option<DMatrix<u64>>,
-    a: Option<DMatrix<u64>>
+    data: DMatrix<BigInt>,
+    hint: Option<DMatrix<BigInt>>,
+    a: Option<DMatrix<BigInt>>
 }
 
 impl SimplePirDatabase {
-    pub fn new(data: DMatrix<u64>) -> Self {
+    pub fn new(data: DMatrix<BigInt>) -> Self {
         Self { data, params: None, hint: None, a: None }
     }
 
-    pub fn update_db(&mut self, data: DMatrix<u64>) -> Result<()> {
+    pub fn update_db(&mut self, data: DMatrix<BigInt>) -> Result<()> {
         self.data = data;
 
         let params = gen_params(self.data.nrows(), self.data.ncols(), 17);
@@ -41,7 +42,7 @@ impl SimplePirDatabase {
         Ok(())
     }
 
-    pub fn respond(&self, query: &DVector<u64>) -> Result<DVector<u64>> {
+    pub fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>> {
         let params = self.params.as_ref().unwrap();
         let answer = process_query(&self.data, query, params.q);
 
@@ -52,11 +53,11 @@ impl SimplePirDatabase {
         self.params.as_ref().unwrap()
     }
 
-    fn hint(&self) -> &DMatrix<u64> {
+    fn hint(&self) -> &DMatrix<BigInt> {
         self.hint.as_ref().unwrap()
     }
 
-    fn a(&self) -> &DMatrix<u64> {
+    fn a(&self) -> &DMatrix<BigInt> {
         self.a.as_ref().unwrap()
     }
 }
@@ -81,6 +82,8 @@ impl Database for EmbeddingDatabase {
         let stock_json = String::from_utf8(stock_json.stdout).unwrap();
         let stock_json: Vec<Value> = serde_json::from_str(&stock_json)?;
 
+        println!("stock_json: {:?}", stock_json);
+
         let embeddings = self.embedder.embed_json_array(&stock_json)?;
         assert_eq!(embeddings.nrows(), embeddings.ncols());
 
@@ -89,7 +92,7 @@ impl Database for EmbeddingDatabase {
         Ok(())
     }
 
-    fn respond(&self, query: &DVector<u64>) -> Result<DVector<u64>> {
+    fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>> {
         self.db.respond(query)
     }
 
@@ -97,11 +100,11 @@ impl Database for EmbeddingDatabase {
         self.db.params()
     }
 
-    fn hint(&self) -> &DMatrix<u64> {
+    fn hint(&self) -> &DMatrix<BigInt> {
         self.db.hint()
     }
 
-    fn a(&self) -> &DMatrix<u64> {
+    fn a(&self) -> &DMatrix<BigInt> {
         self.db.a()
     }
 }
@@ -133,7 +136,7 @@ impl Database for EncodingDatabase {
         Ok(())
     }
 
-    fn respond(&self, query: &DVector<u64>) -> Result<DVector<u64>> {
+    fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>> {
         self.db.respond(query)
     }
 
@@ -141,11 +144,11 @@ impl Database for EncodingDatabase {
         self.db.params()
     }
 
-    fn hint(&self) -> &DMatrix<u64> {
+    fn hint(&self) -> &DMatrix<BigInt> {
         self.db.hint()
     }
 
-    fn a(&self) -> &DMatrix<u64> {
+    fn a(&self) -> &DMatrix<BigInt> {
         self.db.a()
     }
 }

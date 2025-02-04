@@ -1,8 +1,10 @@
 use anyhow::Result;
 use nalgebra::{DMatrix, DVector};
+use num_bigint::BigInt;
+use num_traits::ops::bytes::ToBytes;
+
 
 fn encode_input(text: &str) -> Result<DVector<u64>> {
-    println!("text: {}", text);
     let bytes = text.as_bytes();
     let tmp = bytes
         .chunks(8)
@@ -17,15 +19,15 @@ fn encode_input(text: &str) -> Result<DVector<u64>> {
 }
 
 
-fn decode_input(data: &DVector<u64>) -> Result<String> {
-    let bytes = data.iter().flat_map(|&x|{
-        x.to_le_bytes().to_vec()
+fn decode_input(data: &DVector<BigInt>) -> Result<String> {
+    let bytes = data.iter().flat_map(|x|{
+        x.to_le_bytes()
     }).collect::<Vec<u8>>();
 
     Ok(String::from_utf8(bytes)?)
 }
 
-pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<u64>> {
+pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<BigInt>> {
     // First find the maximum length
     let max_length = data.iter().map(|text| text.len()).max().unwrap();
     
@@ -41,9 +43,9 @@ pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<u64>> {
         .collect::<Vec<String>>();
 
     // Now encode the padded strings
-    let embeddings = padded_data.iter()
-        .map(|text| {
-            println!("text: {}", text);
+    let embeddings = padded_data.iter().enumerate()
+        .map(|(i, text)| {
+            println!("encoding text[{:?}]: {:?}", i, text);
             encode_input(text).unwrap()
         })
         .collect::<Vec<_>>();
@@ -58,14 +60,14 @@ pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<u64>> {
     // Copy the embeddings into the square matrix
     for (i, embedding) in embeddings.iter().enumerate() {
         for (j, &value) in embedding.iter().enumerate() {
-            square_matrix[(i, j)] = value;
+            square_matrix[(i, j)] = BigInt::from(value);
         }
     }
     
     Ok(square_matrix)
 }
 
-pub fn decode_data(data: &DMatrix<u64>) -> Result<Vec<String>> {
+pub fn decode_data(data: &DMatrix<BigInt>) -> Result<Vec<String>> {
     // Decode and trim null characters
     let data = data.column_iter()
         .map(|col| {
