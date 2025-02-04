@@ -32,7 +32,7 @@ impl SimplePirDatabase {
     pub fn update_db(&mut self, data: DMatrix<BigInt>) -> Result<()> {
         self.data = data;
 
-        let params = gen_params(self.data.nrows(), self.data.ncols(), 17);
+        let params = gen_params(self.data.nrows(), self.data.ncols(), 64);
         let (hint, a) = gen_hint(&params, &self.data);
 
         self.params = Some(params);
@@ -131,7 +131,7 @@ impl Database for EncodingDatabase {
         let encodings = encode_data(&stock_json.iter().map(|v| v.to_string()).collect::<Vec<String>>())?;
         assert_eq!(encodings.nrows(), encodings.ncols());
 
-        self.db.update_db(encodings)?;
+        self.db.update_db(encodings.transpose())?;
 
         Ok(())
     }

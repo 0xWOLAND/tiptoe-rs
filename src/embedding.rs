@@ -102,7 +102,10 @@ impl BertEmbedder {
 
 #[cfg(test)]
 mod tests {
+    use num_traits::One;
     use simplepir::{gen_hint, gen_params, generate_query, process_query, recover};
+
+    use crate::utils::{decode_input, encode_data};
 
     use super::*;
 
@@ -118,35 +121,33 @@ mod tests {
 
     #[test]
     fn test_embedding() {
-        let expected_idx = 2;
+        let expected_idx = 0;
     
-        let embedder = BertEmbedder::new().unwrap();
         let text = ["Lorem ipsum odor amet, consectetuer adipiscing elit", " Conubia elementum taciti dapibus vestibulum mattis primis", " Facilisis fames justo ultricies pharetra rhoncus", " Nam vel mi aptent turpis purus fusce purus", " Pretium ultrices torquent vulputate venenatis magnis vitae tempor semper torquent", " Habitant suspendisse nascetur in quis adipiscing"];
-        let embeddings = text.iter().map(|v| embedder.encode_text(&v)).collect::<Result<Vec<_>>>().unwrap();
-        
-        // Print dot products
-        let query_embedding = embedder.encode_text(text[expected_idx]).unwrap();
-    
-        let dim = std::cmp::max(embeddings[0].nrows(), embeddings.len());
-        let mut db = DMatrix::zeros(dim, dim);
-    
-        for (i, embedding) in embeddings.iter().enumerate() {
-            // db.column_mut(i).copy_from_slice(embedding.as_slice());
-            db.row_mut(i).copy_from_slice(embedding.as_slice());
-        }
 
-        println!("db: {:?}", db.clone() * query_embedding);
-    
-        let query_vector = embedder.encode_text(text[expected_idx]).unwrap();
-        
-        let params = gen_params(db.nrows(), 2048, 17);
-        let (hint, a) = gen_hint(&params, &db);
-        let (s, query) = generate_query(&params, &query_vector, &a);
-        let answer = process_query(&db, &query, params.q);
-        let result: DVector<BigInt> = recover(&hint, &s, &answer, &params);
-    
-        let (max_idx, _) = result.argmax();
+        let d= encode_data(&text.map(|x| x.to_string()).to_vec()).unwrap().transpose();
+        let matrix_height = d.nrows();
+        let mut v = DVector::zeros(matrix_height);
+        v[expected_idx] = BigInt::one();
+
+        // Expected result
+        let expected = {
+            let mut result = DVector::zeros(matrix_height);
+            for i in 0..matrix_height {
+                result[i] = d[(i, expected_idx)].clone();
+            }
+            result
+        };
+
+        let params = gen_params(matrix_height, 2048, 64);
+        let (hint, a) = gen_hint(&params, &d);
+        let (s, query) = generate_query(&params, &v, &a);
+        let answer = process_query(&d, &query, params.q);
+        let result = recover(&hint, &s, &answer, &params);
+
         println!("result: {:?}", result);
-        println!("max_idx: {:?}", max_idx);
+        println!("expected: {:?}", expected);
+        println!("decoded: {:?}", decode_input(&result));
+        println!("decoded expected: {:?}", decode_input(&expected));
     }
 }
