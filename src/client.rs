@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::{embedding::BertEmbedder, server::{Database, EmbeddingDatabase, EncodingDatabase}};
+use crate::{embedding::BertEmbedder, server::{Database, EmbeddingDatabase, EncodingDatabase}, utils::{decode_data, decode_input}};
 use anyhow::Result;
 use nalgebra::DVector;
 use num_bigint::BigInt;
@@ -97,6 +97,10 @@ fn test_client() {
     let mut client = Client::new();
     client.update().unwrap();
     println!("querying...");
-    let _result = client.query("Pacer Data and Digital Revoluti").unwrap();
+    let _result: DVector<BigInt> = client.query("Pacer Data and Digital Revoluti").unwrap();
+
+    println!("result: {:?}", _result);
+    let output = decode_input(&_result).unwrap();
+    println!("output: {:?}", output);
 
 }

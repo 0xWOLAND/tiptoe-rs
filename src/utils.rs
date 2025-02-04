@@ -19,12 +19,13 @@ fn encode_input(text: &str) -> Result<DVector<u64>> {
 }
 
 
-fn decode_input(data: &DVector<BigInt>) -> Result<String> {
+pub fn decode_input(data: &DVector<BigInt>) -> Result<String> {
     let bytes = data.iter().flat_map(|x|{
         x.to_le_bytes()
     }).collect::<Vec<u8>>();
 
-    Ok(String::from_utf8(bytes)?)
+    let s = String::from_utf8(bytes)?;
+    Ok(s.replace("\0", "")) // Remove ALL null characters
 }
 
 pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<BigInt>> {
@@ -69,9 +70,9 @@ pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<BigInt>> {
 
 pub fn decode_data(data: &DMatrix<BigInt>) -> Result<Vec<String>> {
     // Decode and trim null characters
-    let data = data.column_iter()
-        .map(|col| {
-            decode_input(&col.into_owned())
+    let data = data.row_iter()
+        .map(|row| {
+            decode_input(&row.transpose().into_owned())
                 .map(|s| s.trim_end_matches('\0').to_string())
         })
         .collect::<Result<Vec<_>>>()?;
@@ -80,11 +81,14 @@ pub fn decode_data(data: &DMatrix<BigInt>) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    use nalgebra::coordinates::X;
+
     use super::*;
     #[test]
     fn test_encode_decode() {
-        let data = vec!["Hello bitches!".to_string(), "world!".to_string()];
+        let data = ["Lorem ipsum odor amet, consectetuer adipiscing elit", " Conubia elementum taciti dapibus vestibulum mattis primis", " Facilisis fames justo ultricies pharetra rhoncus", " Nam vel mi aptent turpis purus fusce purus", " Pretium ultrices torquent vulputate venenatis magnis vitae tempor semper torquent", " Habitant suspendisse nascetur in quis adipiscing"].map(|x| x.to_string()).to_vec();
         let encoded = encode_data(&data).unwrap();
+        println!("encoded: {:?}", encoded);
         let decoded = decode_data(&encoded).unwrap();
         println!("{:?}", decoded);
     }
