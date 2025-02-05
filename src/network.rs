@@ -320,16 +320,6 @@ impl NetworkClient {
     }
 }
 
-// Add this to Cargo.toml:
-// [dependencies]
-// tokio = { version = "1.0", features = ["full"] }
-// axum = "0.8"
-// hyper = "0.14"
-// async-trait = "0.1"
-// reqwest = { version = "0.11", features = ["json"] }
-
-// Binary files for running servers
-// src/bin/encoding_server.rs
 #[cfg(test)]
 mod tests {
     use crate::utils::decode_input;
