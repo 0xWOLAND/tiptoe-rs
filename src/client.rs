@@ -97,15 +97,27 @@ impl Client {
         }
     }
 
-    pub fn query(&self, query: &str) -> Result<DVector<BigInt>> {
+    pub async fn query(&self, query: &str) -> Result<DVector<BigInt>> {
         let embedding = self.embedder.embed_text(query)?;
-        let m_embedding = self.embedding_db.params().m;
-        let m_encoding = self.encoding_db.params().m;
         
-        let (s_embedding, query_embedding) = generate_query(self.embedding_db.params(), &Self::adjust_embedding(embedding, m_embedding), self.embedding_db.a());
-        let response_embedding = self.embedding_db.respond(&query_embedding)?;
-        let result_embedding: DVector<BigInt> = recover(self.embedding_db.hint(), &s_embedding, &response_embedding, self.embedding_db.params());
+        // Query embedding database
+        let embedding_params = self.embedding_db.params().await?;
+        let adjusted_embedding = Self::adjust_embedding(embedding, embedding_params.m);
+        let (s_embedding, query_embedding) = generate_query(
+            &embedding_params,
+            &adjusted_embedding,
+            &self.embedding_db.a().await?
+        );
         
+        let response_embedding = self.embedding_db.respond(&query_embedding).await?;
+        let result_embedding = recover(
+            &self.embedding_db.hint().await?,
+            &s_embedding,
+            &response_embedding,
+            &embedding_params
+        );
+        
+        // Convert to one-hot vector
         let result_vec = {
             let mut vec = DVector::zeros(result_embedding.len());
             let max_idx = result_embedding.iter()

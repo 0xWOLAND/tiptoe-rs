@@ -271,7 +271,7 @@ impl NetworkClient {
     }
 
     pub async fn query(&self, query: &str) -> Result<DVector<BigInt>> {
-        let embedding = self.embedder.encode_text(query)?;
+        let embedding = self.embedder.embed_text(query)?;
         
         let embedding_params = self.embedding_db.get_params().await?;
         let adjusted_embedding = Self::adjust_embedding(embedding, embedding_params.m);
