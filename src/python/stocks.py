@@ -26,6 +26,7 @@ if response.status_code == 200:
             "name": item.get("displayName", item.get("shortName", item.get("longName", "N/A"))),
             "currentPrice": item.get("regularMarketPrice", "N/A"),
         }
+        # format(f'{item.get("symbol", "N/A")} {item.get("displayName", item.get("shortName", item.get("longName", "N/A")))} PRICE: {item.get("regularMarketPrice", "N/A")}') # Try shorter description
         for item in data.get("body", [])
     ]
     print(str(results).replace("'", '"'))
