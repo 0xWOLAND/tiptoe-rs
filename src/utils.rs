@@ -46,7 +46,6 @@ pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<BigInt>> {
     // Now encode the padded strings
     let embeddings = padded_data.iter().enumerate()
         .map(|(i, text)| {
-            println!("encoding text[{:?}]: {:?}", i, text);
             encode_input(text).unwrap()
         })
         .collect::<Vec<_>>();
@@ -81,7 +80,6 @@ pub fn decode_data(data: &DMatrix<BigInt>) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use nalgebra::coordinates::X;
 
     use super::*;
     #[test]

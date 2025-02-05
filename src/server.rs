@@ -82,8 +82,6 @@ impl Database for EmbeddingDatabase {
         let stock_json = String::from_utf8(stock_json.stdout).unwrap();
         let stock_json: Vec<Value> = serde_json::from_str(&stock_json)?;
 
-        println!("stock_json: {:?}", stock_json);
-
         let embeddings = self.embedder.embed_json_array(&stock_json)?;
         assert_eq!(embeddings.nrows(), embeddings.ncols());
 
