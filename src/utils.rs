@@ -44,8 +44,8 @@ pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<BigInt>> {
         .collect::<Vec<String>>();
 
     // Now encode the padded strings
-    let embeddings = padded_data.iter().enumerate()
-        .map(|(i, text)| {
+    let embeddings = padded_data.iter()
+        .map(|text| {
             encode_input(text).unwrap()
         })
         .collect::<Vec<_>>();

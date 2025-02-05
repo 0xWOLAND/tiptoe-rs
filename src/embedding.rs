@@ -4,6 +4,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use num_bigint::BigInt;
+use num_traits::One;
 use serde_json::Value;
 use tokenizers::Tokenizer;
 use nalgebra::{DMatrix, DVector};
@@ -51,14 +52,13 @@ impl BertEmbedder {
         Ok(v.broadcast_div(&v.sqr()?.sum_keepdim(1)?.sqrt()?)?)
     }
 
-    fn quantize_to_u64(&self, embeddings: &Tensor) -> Result<DVector<BigInt>> {
+    fn embedding_to_bigint(&self, embeddings: &Tensor) -> Result<DVector<BigInt>> {
         let embeddings = embeddings.squeeze(0)?;
         let values = embeddings.to_vec1::<f32>()?;
         
-        let max_value = 1 << 8;  // 131072
         let quantized: Vec<BigInt> = values.iter()
             .map(|&x| {
-                BigInt::from((x * max_value as f32) as u64)
+                f32_to_bigint(x)
             })
             .collect();
             
@@ -66,7 +66,7 @@ impl BertEmbedder {
     }
 
     pub fn embed_json_array(&self, json: &Vec<Value>) -> Result<DMatrix<BigInt>> {
-        let embeddings = json.iter().map(|v| self.encode_text(&v.to_string())).collect::<Result<Vec<_>>>()?;
+        let embeddings = json.iter().map(|v| self.embed_text(&v.to_string())).collect::<Result<Vec<_>>>()?;
 
         let dim = std::cmp::max(embeddings[0].nrows(), embeddings.len());
         let mut out = DMatrix::zeros(dim, dim);
@@ -78,7 +78,7 @@ impl BertEmbedder {
         Ok(out)
     }
 
-    pub fn encode_text(&self, text: &str) -> Result<DVector<BigInt>> {
+    pub fn embed_text(&self, text: &str) -> Result<DVector<BigInt>> {
         let tokens = self
             .tokenizer
             .encode(text, true)
@@ -96,8 +96,37 @@ impl BertEmbedder {
 
         let embeddings = self.normalize_l2(&embeddings)?;
         
-        self.quantize_to_u64(&embeddings)
+        self.embedding_to_bigint(&embeddings)
     }
+}
+
+fn f32_to_bigint(value: f32) -> BigInt {
+    if value.is_nan() || value.is_infinite() {
+        panic!("Cannot convert NaN or infinite values to BigInt");
+    }
+
+    let (mantissa, exponent, sign) = {
+        let bits = value.to_bits(); // Get raw IEEE 754 representation
+        let sign = if bits >> 31 == 1 { -1 } else { 1 };
+        let exponent = ((bits >> 23) & 0xFF) as i32 - 127; // Unbiased exponent
+        let mantissa = (bits & 0x7FFFFF) | 0x800000; // Add implicit leading 1
+        (mantissa, exponent, sign)
+    };
+
+    let mut big_mantissa = BigInt::from(mantissa);
+
+    if exponent >= 0 {
+        big_mantissa <<= exponent as usize; // Multiply by 2^exponent
+    } else {
+        let denominator = BigInt::one() << (-exponent as usize); // Divide by 2^(-exponent)
+        big_mantissa /= denominator;
+    }
+
+    if sign == -1 {
+        big_mantissa = -big_mantissa;
+    }
+
+    big_mantissa
 }
 
 #[cfg(test)]
@@ -112,7 +141,7 @@ mod tests {
     #[test]
     fn test_embedding_shape() -> Result<()> {
         let embedder = BertEmbedder::new()?;
-        let embedding = embedder.encode_text("test text")?;
+        let embedding = embedder.embed_text("test text")?;
         
         assert_eq!(embedding.nrows(), 384);
         Ok(())

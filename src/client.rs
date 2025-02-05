@@ -46,7 +46,7 @@ impl Client {
     }
 
     pub fn query(&self, query: &str) -> Result<DVector<BigInt>> {
-        let embedding = self.embedder.encode_text(query)?;
+        let embedding = self.embedder.embed_text(query)?;
         let m_embedding = self.embedding_db.params().m;
         let m_encoding = self.encoding_db.params().m;
         
