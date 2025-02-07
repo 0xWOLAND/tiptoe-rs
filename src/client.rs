@@ -5,6 +5,7 @@ use anyhow::Result;
 use nalgebra::DVector;
 use num_bigint::BigInt;
 use num_traits::One;
+use rand::seq::IndexedRandom;
 use simplepir::{generate_query, recover};
 
 
@@ -102,5 +103,113 @@ fn test_client() {
             println!("Decoded output: {:?}", output);
         }
         
+    }
+}
+
+#[test]
+fn test_client_query() {
+    use std::collections::HashMap;
+    use rand::seq::SliceRandom;
+    use serde_json::Value;
+
+    println!("Testing client query acceptance rate...");
+    let mut client = Client::new();
+
+    // Define base queries
+    let symbols: HashMap<&str, &str> = [
+        ("A", "Agilent"),
+        ("APPL", "Apple"),
+        ("GM", "General Motors Company"),
+        ("MU", "Micron Technology"),
+        ("TSLA", "Tesla"),
+        ("ALI=F", "Aluminum Futures,Apr-2025"),
+        ("CD=F", "Canadian Dollar Dec 20"),
+        ("QM=F", "E-mini Crude Oil Futures,Mar-20"),
+        ("^IXIC", "NASDAQ Composite"),
+        ("EURUSD=X", "EUR/USD"),
+        ("AUDUSD=X", "AUD/USD"),
+        ("^DJT", "Dow Jones Transportation Average"),
+        ("^HSI", "HANG SENG INDEX"),
+        ("^VIX", "CBOE Volatility Index"),
+        ("^TRFK-TC", "Pacer Data and Digital Revolution"),
+        ("SPY", "SPDR S&P 500"),
+        ("AWSHX", "Washington Mutual Invs Fd Cl A"),
+        ("VOO", "Vanguard S&P 500 ETF"),
+        ("XAIX.BE", "Xtr.(IE)-Art.Int.+Big Data ETFR"),
+        ("BTC-USD", "Bitcoin USD"),
+        ("ETH-USD", "Ethereum USD"),
+    ]
+    .iter()
+    .copied()
+    .collect();
+
+    let query_templates = vec![
+        "Tell me about {name}",
+        "What is the latest price of {name}?",
+        "How is {name} performing today?",
+        "Give me details on {name}",
+        "Fetch data for {name}",
+        "What's happening with {name}?",
+    ];
+
+    let mut success_count = 0;
+    let mut error_count = 0;
+
+    let mut rng = rand::thread_rng();
+
+    // Run multiple updates and queries
+    for i in 0..3 {
+        println!("\nUpdate iteration {}...", i + 1);
+        client.update().unwrap();
+
+        for (symbol, name) in symbols.iter() {
+            let template = query_templates.choose(&mut rng).unwrap();
+            let query = template.replace("{name}", name);
+
+            println!("\nQuerying: {}", query);
+
+            match client.query(&query) {
+                Ok(result) => {
+                    println!("Raw result: {:?}", result);
+                    let output = decode_input(&result);
+
+                    match output {
+                        Ok(output) => {
+                            println!("Decoded output: {:?}", output);
+                            
+                            let json_output: Value = serde_json::from_str(&output).unwrap_or_else(|_| Value::Null);
+                            
+                            let received_name = json_output["name"].as_str().unwrap_or("").trim();
+
+                            if received_name == name.trim(){
+                                success_count += 1;
+                            } else {
+                                error_count += 1;
+                                println!(
+                                    "Data mismatch: Expected ({}), but got ({})",
+                                    name, received_name
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            error_count += 1;
+                            println!("Decoding failed: {:?}", e);
+                        }
+                    }
+                },
+                Err(e) => {
+                    error_count += 1;
+                    println!("Query failed: {:?}", e)
+                }
+            }
+
+            let total_attempts = success_count + error_count;
+            let acceptance_rate = if total_attempts > 0 {
+                (success_count as f64 / total_attempts as f64) * 100.0
+            } else {
+                0.0
+            };
+            println!("Current acceptance rate: {:.2}%", acceptance_rate);
+        }
     }
 }
