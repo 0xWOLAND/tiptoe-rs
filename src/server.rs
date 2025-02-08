@@ -129,7 +129,7 @@ impl Database for EncodingDatabase {
         let encodings = encode_data(&stock_json.iter().map(|v| v.to_string()).collect::<Vec<String>>())?;
         assert_eq!(encodings.nrows(), encodings.ncols());
 
-        self.db.update_db(encodings.transpose())?;
+        self.db.update_db(encodings)?;
 
         Ok(())
     }

@@ -29,21 +29,18 @@ pub fn decode_input(data: &DVector<BigInt>) -> Result<String> {
 }
 
 pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<BigInt>> {
-    // First find the maximum length
     let max_length = data.iter().map(|text| text.len()).max().unwrap();
     
-    // Pad each string to the same length
     let padded_data = data.iter()
         .map(|text| {
             let mut padded = text.clone();
             while padded.len() < max_length {
-                padded.push('\0'); // Padding with null character
+                padded.push('\0'); 
             }
             padded
         })
         .collect::<Vec<String>>();
 
-    // Now encode the padded strings
     let embeddings = padded_data.iter()
         .map(|text| {
             encode_input(text).unwrap()
@@ -54,13 +51,11 @@ pub fn encode_data(data: &Vec<String>) -> Result<DMatrix<BigInt>> {
     let embedding_size = embeddings[0].len();
     let square_size = std::cmp::max(num_embeddings, embedding_size);
 
-    // Create a square matrix filled with zeros
     let mut square_matrix = DMatrix::zeros(square_size, square_size);
     
-    // Copy the embeddings into the square matrix
     for (i, embedding) in embeddings.iter().enumerate() {
         for (j, &value) in embedding.iter().enumerate() {
-            square_matrix[(i, j)] = BigInt::from(value);
+            square_matrix[(j, i)] = BigInt::from(value);
         }
     }
     
