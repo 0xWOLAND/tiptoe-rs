@@ -2308,6 +2308,7 @@ dependencies = [
 [[package]]
 name = "simplepir"
 version = "0.1.0"
+source = "git+https://github.com/0xWOLAND/simplepir-rs#b1682aa4089625ff039e3d53cf7dc6a6fb588b7f"
 dependencies = [
  "nalgebra",
  "num-bigint",
@@ -2547,6 +2548,7 @@ dependencies = [
  "rand 0.9.0",
  "serde_json",
  "simplepir",
+ "strsim 0.11.1",
  "tokenizers",
 ]
 

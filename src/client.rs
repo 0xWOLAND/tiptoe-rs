@@ -6,6 +6,7 @@ use nalgebra::DVector;
 use num_bigint::BigInt;
 use num_traits::One;
 use rand::seq::IndexedRandom;
+use serde_json::de;
 use simplepir::{generate_query, recover};
 
 
@@ -72,14 +73,44 @@ impl Client {
         
         Ok(result)
     }
+
+    pub fn query_top_k(&self, query: &str, k: usize) -> Result<Vec<DVector<BigInt>>> {
+        let embedding = self.embedder.embed_text(query)?;
+        let m_embedding = self.embedding_db.params().m;
+        let m_encoding = self.encoding_db.params().m;
+        
+        let (s_embedding, query_embedding) = generate_query(self.embedding_db.params(), &Self::adjust_embedding(embedding, m_embedding), self.embedding_db.a());
+        let response_embedding = self.embedding_db.respond(&query_embedding)?;
+        let result_embedding: DVector<BigInt> = recover(self.embedding_db.hint(), &s_embedding, &response_embedding, self.embedding_db.params());
+        let top_indices: Vec<usize> = {
+            let mut indexed_values: Vec<(usize, &BigInt)> = result_embedding.iter()
+                .enumerate()
+                .collect();
+            indexed_values.sort_by(|(_i1, v1), (_i2, v2)| v2.cmp(v1));
+            indexed_values.into_iter()
+                .map(|(i, _val)| i)
+                .collect()
+        };
+            
+        Ok(top_indices[0..k].into_iter().map(|&idx| {
+            let mut vec = DVector::zeros(result_embedding.len());
+            vec[idx] = BigInt::one();
+
+            let (s, query) = generate_query(self.encoding_db.params(), &Self::adjust_embedding(vec, m_encoding), self.encoding_db.a());
+            let response = self.encoding_db.respond(&query).unwrap();
+            let result = recover(self.encoding_db.hint(), &s, &response, self.encoding_db.params());
+
+            result
+        }).collect())
+    }
 }
 
 #[test]
 fn test_client() {
     println!("Testing client...");
     let mut client = Client::new();
+    let k = 3;
     
-    // Define names to query
     let names = vec![
         "Bitcoin USD",
         "Ethereum USD", 
@@ -88,34 +119,48 @@ fn test_client() {
         "NASDAQ Composite"
     ];
     
-    // Run multiple updates
     for i in 0..3 {
         println!("\nUpdate iteration {}...", i + 1);
         client.update().unwrap();
         
-        // Query each name
         for name in &names {
             println!("\nQuerying {}...", name);
-            let result: DVector<BigInt> = client.query(name).unwrap();
-            println!("Raw result: {:?}", result);
-            
-            let output = decode_input(&result).unwrap();
-            println!("Decoded output: {:?}", output);
+            let result: Vec<DVector<BigInt>> = client.query_top_k(name, k).unwrap();
+
+            result.iter().enumerate().for_each(|(i, r)| {
+                let output = decode_input(&r);
+                println!("Decoded {} output: {:?}", i, output);
+            });
         }
-        
     }
 }
 
 #[test]
-fn test_client_query() {
+fn bench_client_retrieval_accuracy() {
     use std::collections::HashMap;
     use rand::seq::SliceRandom;
     use serde_json::Value;
+    use strsim::jaro_winkler;
 
-    println!("Testing client query acceptance rate...");
+    fn names_match(name1: &str, name2: &str) -> bool {
+        let name1 = name1.trim().to_lowercase();
+        let name2 = name2.trim().to_lowercase();
+        
+        // Exact match
+        if name1 == name2 {
+            return true;
+        }
+
+        // Check similarity using Jaro-Winkler distance
+        let similarity = jaro_winkler(&name1, &name2);
+        // Threshold of 0.9 means names need to be 90% similar
+        similarity > 0.9
+    }
+
+    println!("Testing client query acceptance rate for both single and top-k queries...");
     let mut client = Client::new();
+    let k = 3;
 
-    // Define base queries
     let symbols: HashMap<&str, &str> = [
         ("A", "Agilent"),
         ("APPL", "Apple"),
@@ -152,12 +197,12 @@ fn test_client_query() {
         "What's happening with {name}?",
     ];
 
-    let mut success_count = 0;
-    let mut error_count = 0;
-
+    let mut single_success_count = 0;
+    let mut single_error_count = 0;
+    let mut topk_success_count = 0;
+    let mut topk_error_count = 0;
     let mut rng = rand::thread_rng();
 
-    // Run multiple updates and queries
     for i in 0..3 {
         println!("\nUpdate iteration {}...", i + 1);
         client.update().unwrap();
@@ -168,48 +213,110 @@ fn test_client_query() {
 
             println!("\nQuerying: {}", query);
 
+            // Test single query
             match client.query(&query) {
                 Ok(result) => {
-                    println!("Raw result: {:?}", result);
-                    let output = decode_input(&result);
-
-                    match output {
+                    println!("Single query raw result: {:?}", result);
+                    match decode_input(&result) {
                         Ok(output) => {
-                            println!("Decoded output: {:?}", output);
+                            println!("Single query decoded output: {:?}", output);
                             
-                            let json_output: Value = serde_json::from_str(&output).unwrap_or_else(|_| Value::Null);
-                            
-                            let received_name = json_output["name"].as_str().unwrap_or("").trim();
-
-                            if received_name == name.trim(){
-                                success_count += 1;
-                            } else {
-                                error_count += 1;
-                                println!(
-                                    "Data mismatch: Expected ({}), but got ({})",
-                                    name, received_name
-                                );
+                            if let Ok(json_output) = serde_json::from_str::<Value>(&output) {
+                                let received_name = json_output["name"].as_str().unwrap_or("").trim();
+                                
+                                if names_match(received_name, name) {
+                                    single_success_count += 1;
+                                    println!("Single query matched: '{}' with '{}'", received_name, name);
+                                } else {
+                                    single_error_count += 1;
+                                    println!(
+                                        "Single query data mismatch: Expected ({}), but got ({})",
+                                        name, received_name
+                                    );
+                                }
                             }
                         },
                         Err(e) => {
-                            error_count += 1;
-                            println!("Decoding failed: {:?}", e);
+                            single_error_count += 1;
+                            println!("Single query decoding failed: {:?}", e);
                         }
                     }
                 },
                 Err(e) => {
-                    error_count += 1;
-                    println!("Query failed: {:?}", e)
+                    single_error_count += 1;
+                    println!("Single query failed: {:?}", e)
                 }
             }
 
-            let total_attempts = success_count + error_count;
-            let acceptance_rate = if total_attempts > 0 {
-                (success_count as f64 / total_attempts as f64) * 100.0
-            } else {
-                0.0
-            };
-            println!("Current acceptance rate: {:.2}%", acceptance_rate);
+            // Test top-k query
+            match client.query_top_k(&query, k) {
+                Ok(results) => {
+                    println!("Top-k query raw results: {:?}", results);
+                    let mut found_match = false;
+                    let mut match_position = None;
+
+                    for (idx, result) in results.iter().enumerate() {
+                        match decode_input(result) {
+                            Ok(output) => {
+                                println!("Top-k decoded output {}: {:?}", idx, output);
+                                
+                                if let Ok(json_output) = serde_json::from_str::<Value>(&output) {
+                                    let received_name = json_output["name"].as_str().unwrap_or("").trim();
+                                    
+                                    if names_match(received_name, name) {
+                                        found_match = true;
+                                        match_position = Some(idx);
+                                        println!("Found match at position {}", idx);
+                                        println!("Matched: '{}' with '{}'", received_name, name);
+                                        break;
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                println!("Top-k decoding failed for result {}: {:?}", idx, e);
+                            }
+                        }
+                    }
+
+                    if found_match {
+                        topk_success_count += 1;
+                        println!("Successfully found match at position {:?}", match_position);
+                    } else {
+                        topk_error_count += 1;
+                        println!("Expected name {} not found in top {} results", name, k);
+                        println!("Top-k results: {:?}", results.iter().map(|r| decode_input(r)).collect::<Vec<_>>());
+                    }
+                },
+                Err(e) => {
+                    topk_error_count += 1;
+                    println!("Top-k query failed: {:?}", e)
+                }
+            }
+
+            // Print current stats
+            let single_total = single_success_count + single_error_count;
+            let topk_total = topk_success_count + topk_error_count;
+            
+            println!("\nCurrent Statistics:");
+            println!("Single Query Acceptance Rate: {:.2}%", 
+                if single_total > 0 { (single_success_count as f64 / single_total as f64) * 100.0 } else { 0.0 });
+            println!("Top-k Query Acceptance Rate: {:.2}%", 
+                if topk_total > 0 { (topk_success_count as f64 / topk_total as f64) * 100.0 } else { 0.0 });
         }
     }
+
+    println!("\nFinal Statistics:");
+    println!("Single Query:");
+    println!("  Total Attempts: {}", single_success_count + single_error_count);
+    println!("  Successes: {}", single_success_count);
+    println!("  Errors: {}", single_error_count);
+    println!("  Final acceptance rate: {:.2}%", 
+        (single_success_count as f64 / (single_success_count + single_error_count) as f64) * 100.0);
+    
+    println!("\nTop-k Query:");
+    println!("  Total Attempts: {}", topk_success_count + topk_error_count);
+    println!("  Successes: {}", topk_success_count);
+    println!("  Errors: {}", topk_error_count);
+    println!("  Final acceptance rate: {:.2}%", 
+        (topk_success_count as f64 / (topk_success_count + topk_error_count) as f64) * 100.0);
 }
