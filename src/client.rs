@@ -1,12 +1,13 @@
-use anyhow::Result;
 use nalgebra::{DMatrix, DVector};
 use num_bigint::BigInt;
 use num_traits::One;
 use simplepir::{generate_query, recover, SimplePIRParams};
 use std::cmp::Ordering;
+use anyhow::Result;
 
 use crate::{
     embedding::BertEmbedder,
+    error::PirError,
     network::{AsyncDatabase, RemoteDatabase},
     server::{Database, EmbeddingDatabase, EncodingDatabase},
 };
@@ -21,14 +22,16 @@ impl<T: Database> DatabaseConnection<T> {
     #[allow(dead_code)]
     async fn update(&mut self) -> Result<()> {
         match self {
-            Self::Local(db) => db.update(),
-            Self::Remote(_db) => Ok(()), // Remote databases should be updated separately
+            Self::Local(db) => db.update()
+                .map_err(|e| PirError::Database(format!("Update failed: {}", e)).into()),
+            Self::Remote(_db) => Ok(()), 
         }
     }
 
     async fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>> {
         match self {
-            Self::Local(db) => db.respond(query),
+            Self::Local(db) => db.respond(query)
+                .map_err(|e| PirError::Database(format!("Response failed: {}", e)).into()),
             Self::Remote(db) => db.respond(query).await,
         }
     }
@@ -65,8 +68,8 @@ pub struct Client {
 impl Client {
     pub fn new_local() -> Result<Self> {
         Ok(Self {
-            embedding_db: DatabaseConnection::Local(EmbeddingDatabase::new()),
-            encoding_db: DatabaseConnection::Local(EncodingDatabase::new()),
+            embedding_db: DatabaseConnection::Local(EmbeddingDatabase::new()?),
+            encoding_db: DatabaseConnection::Local(EncodingDatabase::new()?),
             embedder: BertEmbedder::new()?,
         })
     }
@@ -101,7 +104,8 @@ impl Client {
     }
 
     pub async fn query(&self, query: &str) -> Result<DVector<BigInt>> {
-        let embedding = self.embedder.embed_text(query)?;
+        let embedding = self.embedder.embed_text(query)
+            .map_err(|e| PirError::Embedding(format!("Text embedding failed: {}", e)))?;
 
         // Query embedding database
         let embedding_params = self.embedding_db.params().await?;
@@ -127,8 +131,8 @@ impl Client {
                 .iter()
                 .enumerate()
                 .max_by_key(|(_i, val)| (*val).clone())
-                .map(|(i, _val)| i)
-                .unwrap();
+                .ok_or_else(|| PirError::InvalidInput("Empty embedding result".to_string()))?
+                .0;
             vec[max_idx] = BigInt::one();
             vec
         };
@@ -154,7 +158,12 @@ impl Client {
     }
 
     pub async fn query_top_k(&self, query: &str, k: usize) -> Result<Vec<DVector<BigInt>>> {
-        let embedding = self.embedder.embed_text(query)?;
+        if k == 0 {
+            return Err(PirError::InvalidInput("k must be greater than 0".to_string()).into());
+        }
+
+        let embedding = self.embedder.embed_text(query)
+            .map_err(|e| PirError::Embedding(format!("Text embedding failed: {}", e)))?;
         let embedding_params = self.embedding_db.params().await?;
         let encoding_params = self.encoding_db.params().await?;
 
@@ -178,6 +187,10 @@ impl Client {
             indexed_values.sort_by(|(_i1, v1), (_i2, v2)| v2.cmp(v1));
             indexed_values.into_iter().map(|(i, _val)| i).collect()
         };
+
+        if top_indices.is_empty() {
+            return Err(PirError::InvalidInput("No results found".to_string()).into());
+        }
 
         let mut results = Vec::with_capacity(k);
         for &idx in top_indices.iter().take(k) {

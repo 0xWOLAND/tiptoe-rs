@@ -25,5 +25,5 @@ cargo test --release
 
 To run a specific test with output:
 ```bash
-cargo test --package tiptoe-rs --lib -- client::tests::test_remote_client --exact --nocapture
+cargo test --package tiptoe-rs --lib --release -- client::tests::test_remote_client --exact --nocapture 
 ```
