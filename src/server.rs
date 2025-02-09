@@ -1,18 +1,16 @@
+use anyhow::Result;
 use nalgebra::{DMatrix, DVector};
 use num_bigint::BigInt;
 use serde_json::Value;
 use simplepir::*;
 use std::process::Command;
-use anyhow::Result;
 
-use crate::{
-    embedding::BertEmbedder,
-    error::PirError,
-    utils::encode_data,
-};
+use crate::{embedding::BertEmbedder, error::PirError, utils::encode_data};
 
 pub trait Database {
-    fn new() -> Result<Self> where Self: Sized;
+    fn new() -> Result<Self>
+    where
+        Self: Sized;
     fn update(&mut self) -> Result<()>;
     fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>>;
     fn params(&self) -> &SimplePIRParams;
@@ -51,25 +49,30 @@ impl SimplePirDatabase {
     }
 
     pub fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>> {
-        let params = self.params.as_ref()
+        let params = self
+            .params
+            .as_ref()
             .ok_or_else(|| PirError::Database("Database not initialized".to_string()))?;
         let answer = process_query(&self.data, query, params.q);
         Ok(answer)
     }
 
     fn params(&self) -> &SimplePIRParams {
-        self.params.as_ref()
-            .expect("Database not initialized")
+        self.params.as_ref().ok_or(PirError::Database(
+            "Database not initialized".to_string(),
+        )).unwrap()
     }
 
     fn hint(&self) -> &DMatrix<BigInt> {
-        self.hint.as_ref()
-            .expect("Database not initialized")
+        self.hint.as_ref().ok_or(PirError::Database(
+            "Database not initialized".to_string(),
+        )).unwrap()
     }
 
     fn a(&self) -> &DMatrix<BigInt> {
-        self.a.as_ref()
-            .expect("Database not initialized")
+        self.a.as_ref().ok_or(PirError::Database(
+            "Database not initialized".to_string(),
+        )).unwrap()
     }
 }
 
@@ -99,8 +102,11 @@ impl Database for EmbeddingDatabase {
         let stock_json = String::from_utf8(stock_json.stdout)?;
         let stock_json: Vec<Value> = serde_json::from_str(&stock_json)?;
 
-        let embeddings = self.embedder.embed_json_array(&stock_json).map_err(|e| PirError::Embedding(e.to_string()))?;
-        
+        let embeddings = self
+            .embedder
+            .embed_json_array(&stock_json)
+            .map_err(|e| PirError::Embedding(e.to_string()))?;
+
         if embeddings.nrows() != embeddings.ncols() {
             return Err(PirError::Database("Embedding matrix must be square".to_string()).into());
         }
@@ -155,7 +161,8 @@ impl Database for EncodingDatabase {
                 .iter()
                 .map(|v| v.to_string())
                 .collect::<Vec<String>>(),
-        ).map_err(|e| PirError::Encoding(e.to_string()))?;
+        )
+        .map_err(|e| PirError::Encoding(e.to_string()))?;
 
         if encodings.nrows() != encodings.ncols() {
             return Err(PirError::Database("Encoding matrix must be square".to_string()).into());

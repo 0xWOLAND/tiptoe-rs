@@ -5,7 +5,7 @@ use tiptoe_rs::{
 };
 
 #[tokio::main]
-async fn main() -> Result<()>{
+async fn main() -> Result<()> {
     let db = EncodingDatabase::new()?;
     run_server(db, 3000).await;
 

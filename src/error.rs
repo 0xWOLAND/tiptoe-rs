@@ -32,13 +32,13 @@ pub enum PirError {
 
     #[error("External command failed: {0}")]
     CommandFailed(String),
-    
+
     #[error("Tokenizer error: {0}")]
     TokenizerError(String),
-    
+
     #[error("Device error: {0}")]
     DeviceError(String),
-    
+
     #[error("Tensor operation error: {0}")]
     TensorError(String),
 }

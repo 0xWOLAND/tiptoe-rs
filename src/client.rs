@@ -1,9 +1,9 @@
+use anyhow::Result;
 use nalgebra::{DMatrix, DVector};
 use num_bigint::BigInt;
 use num_traits::One;
 use simplepir::{generate_query, recover, SimplePIRParams};
 use std::cmp::Ordering;
-use anyhow::Result;
 
 use crate::{
     embedding::BertEmbedder,
@@ -22,15 +22,17 @@ impl<T: Database> DatabaseConnection<T> {
     #[allow(dead_code)]
     async fn update(&mut self) -> Result<()> {
         match self {
-            Self::Local(db) => db.update()
+            Self::Local(db) => db
+                .update()
                 .map_err(|e| PirError::Database(format!("Update failed: {}", e)).into()),
-            Self::Remote(_db) => Ok(()), 
+            Self::Remote(_db) => Ok(()),
         }
     }
 
     async fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>> {
         match self {
-            Self::Local(db) => db.respond(query)
+            Self::Local(db) => db
+                .respond(query)
                 .map_err(|e| PirError::Database(format!("Response failed: {}", e)).into()),
             Self::Remote(db) => db.respond(query).await,
         }
@@ -104,7 +106,9 @@ impl Client {
     }
 
     pub async fn query(&self, query: &str) -> Result<DVector<BigInt>> {
-        let embedding = self.embedder.embed_text(query)
+        let embedding = self
+            .embedder
+            .embed_text(query)
             .map_err(|e| PirError::Embedding(format!("Text embedding failed: {}", e)))?;
 
         // Query embedding database
@@ -162,7 +166,9 @@ impl Client {
             return Err(PirError::InvalidInput("k must be greater than 0".to_string()).into());
         }
 
-        let embedding = self.embedder.embed_text(query)
+        let embedding = self
+            .embedder
+            .embed_text(query)
             .map_err(|e| PirError::Embedding(format!("Text embedding failed: {}", e)))?;
         let embedding_params = self.embedding_db.params().await?;
         let encoding_params = self.encoding_db.params().await?;
