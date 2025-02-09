@@ -1,5 +1,5 @@
-mod embedding;
-mod utils;
-pub mod server;
 pub mod client;
-pub mod network;    
+mod embedding;
+pub mod network;
+pub mod server;
+mod utils;

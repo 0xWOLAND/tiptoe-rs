@@ -21,12 +21,17 @@ pub struct SimplePirDatabase {
     params: Option<SimplePIRParams>,
     data: DMatrix<BigInt>,
     hint: Option<DMatrix<BigInt>>,
-    a: Option<DMatrix<BigInt>>
+    a: Option<DMatrix<BigInt>>,
 }
 
 impl SimplePirDatabase {
     pub fn new(data: DMatrix<BigInt>) -> Self {
-        Self { data, params: None, hint: None, a: None }
+        Self {
+            data,
+            params: None,
+            hint: None,
+            a: None,
+        }
     }
 
     pub fn update_db(&mut self, data: DMatrix<BigInt>) -> Result<()> {
@@ -64,16 +69,22 @@ impl SimplePirDatabase {
 
 pub struct EmbeddingDatabase {
     db: SimplePirDatabase,
-    embedder: BertEmbedder
+    embedder: BertEmbedder,
 }
 
 impl Database for EmbeddingDatabase {
     fn new() -> Self {
-        Self { db: SimplePirDatabase::new(DMatrix::zeros(1, 1)), embedder: BertEmbedder::new().unwrap() }
+        Self {
+            db: SimplePirDatabase::new(DMatrix::zeros(1, 1)),
+            embedder: BertEmbedder::new().unwrap(),
+        }
     }
 
     fn update(&mut self) -> Result<()> {
-        let stock_json = Command::new("python").arg("src/python/stocks.py").output().unwrap();
+        let stock_json = Command::new("python")
+            .arg("src/python/stocks.py")
+            .output()
+            .unwrap();
 
         if !stock_json.status.success() {
             return Err(anyhow::anyhow!("Failed to update database"));
@@ -113,11 +124,16 @@ pub struct EncodingDatabase {
 
 impl Database for EncodingDatabase {
     fn new() -> Self {
-        Self { db: SimplePirDatabase::new(DMatrix::zeros(1, 1)) }
+        Self {
+            db: SimplePirDatabase::new(DMatrix::zeros(1, 1)),
+        }
     }
 
     fn update(&mut self) -> Result<()> {
-        let stock_json = Command::new("python").arg("src/python/stocks.py").output().unwrap();
+        let stock_json = Command::new("python")
+            .arg("src/python/stocks.py")
+            .output()
+            .unwrap();
 
         if !stock_json.status.success() {
             return Err(anyhow::anyhow!("Failed to update database"));
@@ -126,7 +142,12 @@ impl Database for EncodingDatabase {
         let stock_json = String::from_utf8(stock_json.stdout).unwrap();
         let stock_json: Vec<Value> = serde_json::from_str(&stock_json)?;
 
-        let encodings = encode_data(&stock_json.iter().map(|v| v.to_string()).collect::<Vec<String>>())?;
+        let encodings = encode_data(
+            &stock_json
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<String>>(),
+        )?;
         assert_eq!(encodings.nrows(), encodings.ncols());
 
         self.db.update_db(encodings)?;

@@ -1,4 +1,7 @@
-use tiptoe_rs::{network::run_server, server::{Database, EmbeddingDatabase}};
+use tiptoe_rs::{
+    network::run_server,
+    server::{Database, EmbeddingDatabase},
+};
 
 #[tokio::main]
 async fn main() {

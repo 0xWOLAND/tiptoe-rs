@@ -1,24 +1,20 @@
+use anyhow::Result;
 use async_trait::async_trait;
 use axum::{
-    routing::{get, post},
-    Router,
-    Json,
     extract::State,
+    routing::{get, post},
+    Json, Router,
 };
 use nalgebra::{DMatrix, DVector};
 use num_bigint::BigInt;
 use num_traits::One;
-use serde::{Serialize, Deserialize};
+use reqwest::Client as HttpClient;
+use serde::{Deserialize, Serialize};
+use simplepir::{gen_params, generate_query, recover, SimplePIRParams};
 use std::{str::FromStr, sync::Arc, time::Duration};
 use tokio::{sync::RwLock, time::interval};
-use anyhow::Result;
-use reqwest::Client as HttpClient;
-use simplepir::{SimplePIRParams, generate_query, recover, gen_params};
 
-use crate::{
-    server::Database,
-    embedding::BertEmbedder,
-};
+use crate::{embedding::BertEmbedder, server::Database};
 
 // Shared state for server
 pub struct ServerState<T: Database + Send + Sync> {
@@ -57,9 +53,7 @@ fn serialize_vector(vec: &DVector<BigInt>) -> Vec<String> {
 }
 
 fn deserialize_vector(vec: &[String]) -> DVector<BigInt> {
-    let values: Vec<BigInt> = vec.iter()
-        .map(|x| x.parse().unwrap())
-        .collect();
+    let values: Vec<BigInt> = vec.iter().map(|x| x.parse().unwrap()).collect();
     DVector::from_vec(values)
 }
 
@@ -72,9 +66,7 @@ fn serialize_matrix(matrix: &DMatrix<BigInt>) -> MatrixResponse {
 }
 
 fn deserialize_matrix(response: &MatrixResponse) -> DMatrix<BigInt> {
-    let data: Vec<BigInt> = response.data.iter()
-        .map(|x| x.parse().unwrap())
-        .collect();
+    let data: Vec<BigInt> = response.data.iter().map(|x| x.parse().unwrap()).collect();
     DMatrix::from_vec(response.rows, response.cols, data)
 }
 
@@ -98,7 +90,7 @@ pub async fn run_server<T: Database + Send + Sync + 'static>(db: T, port: u16) {
     let state = Arc::new(ServerState {
         db: RwLock::new(db),
     });
-    
+
     // Spawn a task to handle periodic updates
     let update_state = Arc::clone(&state);
     tokio::spawn(async move {
@@ -107,9 +99,9 @@ pub async fn run_server<T: Database + Send + Sync + 'static>(db: T, port: u16) {
             interval.tick().await;
             println!("Updating database...");
             let mut db = update_state.db.write().await;
-                if let Err(e) = db.update() {
-                    eprintln!("Error updating database: {:?}", e);
-                }
+            if let Err(e) = db.update() {
+                eprintln!("Error updating database: {:?}", e);
+            }
             if let Err(e) = db.update() {
                 eprintln!("Error updating database: {:?}", e);
             }
@@ -125,7 +117,7 @@ pub async fn run_server<T: Database + Send + Sync + 'static>(db: T, port: u16) {
 
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
     println!("Starting server on {}", addr);
-    
+
     axum_server::bind(addr)
         .serve(app.into_make_service())
         .await
@@ -182,9 +174,7 @@ pub struct RemoteDatabase {
 impl RemoteDatabase {
     pub fn new(base_url: String) -> Self {
         Self {
-            client: HttpClient::builder()
-                .build()
-                .unwrap(),
+            client: HttpClient::builder().build().unwrap(),
             base_url,
         }
     }
@@ -193,7 +183,9 @@ impl RemoteDatabase {
 #[async_trait]
 impl AsyncDatabase for RemoteDatabase {
     async fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>> {
-        let response: QueryResponse = self.client.post(&format!("{}/query", self.base_url))
+        let response: QueryResponse = self
+            .client
+            .post(format!("{}/query", self.base_url))
             .json(&QueryRequest {
                 query: serialize_vector(query),
             })
@@ -201,12 +193,14 @@ impl AsyncDatabase for RemoteDatabase {
             .await?
             .json()
             .await?;
-        
+
         Ok(deserialize_vector(&response.response))
     }
 
     async fn get_params(&self) -> Result<SimplePIRParams> {
-        let response: ParamsData = self.client.get(&format!("{}/params", self.base_url))
+        let response: ParamsData = self
+            .client
+            .get(format!("{}/params", self.base_url))
             .send()
             .await?
             .json()
@@ -215,7 +209,9 @@ impl AsyncDatabase for RemoteDatabase {
     }
 
     async fn get_hint(&self) -> Result<DMatrix<BigInt>> {
-        let response: MatrixResponse = self.client.get(&format!("{}/hint", self.base_url))
+        let response: MatrixResponse = self
+            .client
+            .get(format!("{}/hint", self.base_url))
             .send()
             .await?
             .json()
@@ -224,7 +220,9 @@ impl AsyncDatabase for RemoteDatabase {
     }
 
     async fn get_a(&self) -> Result<DMatrix<BigInt>> {
-        let response: MatrixResponse = self.client.get(&format!("{}/a", self.base_url))
+        let response: MatrixResponse = self
+            .client
+            .get(format!("{}/a", self.base_url))
             .send()
             .await?
             .json()
@@ -254,61 +252,62 @@ impl NetworkClient {
             std::cmp::Ordering::Equal => embedding,
             std::cmp::Ordering::Less => {
                 let mut new_embedding = DVector::zeros(m);
-                new_embedding.rows_mut(0, embedding.len()).copy_from(&embedding);
                 new_embedding
-            },
-            std::cmp::Ordering::Greater => {
-                embedding.rows(0, m).into()
+                    .rows_mut(0, embedding.len())
+                    .copy_from(&embedding);
+                new_embedding
             }
+            std::cmp::Ordering::Greater => embedding.rows(0, m).into(),
         }
     }
 
     pub async fn query(&self, query: &str) -> Result<DVector<BigInt>> {
         let embedding = self.embedder.embed_text(query)?;
-        
+
         let embedding_params = self.embedding_db.get_params().await?;
         let adjusted_embedding = Self::adjust_embedding(embedding, embedding_params.m);
         let (s_embedding, query_embedding) = generate_query(
             &embedding_params,
             &adjusted_embedding,
-            &self.embedding_db.get_a().await?
+            &self.embedding_db.get_a().await?,
         );
-        
+
         let response_embedding = self.embedding_db.respond(&query_embedding).await?;
         let result_embedding = recover(
             &self.embedding_db.get_hint().await?,
             &s_embedding,
             &response_embedding,
-            &embedding_params
+            &embedding_params,
         );
-        
+
         let result_vec = {
             let mut vec = DVector::zeros(result_embedding.len());
-            let max_idx = result_embedding.iter()
+            let max_idx = result_embedding
+                .iter()
                 .enumerate()
-                .max_by_key(|(_i, val)| val.clone())
+                .max_by_key(|(_i, val)| (*val).clone())
                 .map(|(i, _val)| i)
                 .unwrap();
             vec[max_idx] = BigInt::one();
             vec
         };
-        
+
         let encoding_params = self.encoding_db.get_params().await?;
         let adjusted_result = Self::adjust_embedding(result_vec, encoding_params.m);
         let (s, query) = generate_query(
             &encoding_params,
             &adjusted_result,
-            &self.encoding_db.get_a().await?
+            &self.encoding_db.get_a().await?,
         );
-        
+
         let response = self.encoding_db.respond(&query).await?;
         let result = recover(
             &self.encoding_db.get_hint().await?,
             &s,
             &response,
-            &encoding_params
+            &encoding_params,
         );
-        
+
         Ok(result)
     }
 }

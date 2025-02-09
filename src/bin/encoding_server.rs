@@ -1,4 +1,7 @@
-use tiptoe_rs::{network::run_server, server::{EncodingDatabase, Database}};
+use tiptoe_rs::{
+    network::run_server,
+    server::{Database, EncodingDatabase},
+};
 
 #[tokio::main]
 async fn main() {
