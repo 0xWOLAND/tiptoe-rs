@@ -1,4 +1,3 @@
-// src/network.rs
 use async_trait::async_trait;
 use axum::{
     routing::{get, post},
@@ -100,9 +99,10 @@ pub async fn run_server<T: Database + Send + Sync + 'static>(db: T, port: u16) {
         db: RwLock::new(db),
     });
     
+    // Spawn a task to handle periodic updates
     let update_state = Arc::clone(&state);
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_secs(5)); // Update every minute
+        let mut interval = interval(Duration::from_secs(60)); // Update every minute
         loop {
             interval.tick().await;
             println!("Updating database...");
@@ -132,7 +132,6 @@ pub async fn run_server<T: Database + Send + Sync + 'static>(db: T, port: u16) {
         .unwrap();
 }
 
-
 async fn handle_query<T: Database + Send + Sync>(
     State(state): State<Arc<ServerState<T>>>,
     Json(request): Json<QueryRequest>,
@@ -143,14 +142,6 @@ async fn handle_query<T: Database + Send + Sync>(
     Json(QueryResponse {
         response: serialize_vector(&response),
     })
-}
-
-async fn handle_update<T: Database + Send + Sync>(
-    State(state): State<Arc<ServerState<T>>>,
-) -> &'static str {
-    let mut db = state.db.write().await;
-    db.update().unwrap();
-    "Database updated successfully"
 }
 
 async fn handle_params<T: Database + Send + Sync>(
@@ -177,7 +168,6 @@ async fn handle_a<T: Database + Send + Sync>(
 // Remote database implementation that connects to server
 #[async_trait]
 pub trait AsyncDatabase {
-    async fn update(&mut self) -> Result<()>;
     async fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>>;
     async fn get_params(&self) -> Result<SimplePIRParams>;
     async fn get_hint(&self) -> Result<DMatrix<BigInt>>;
@@ -202,13 +192,6 @@ impl RemoteDatabase {
 
 #[async_trait]
 impl AsyncDatabase for RemoteDatabase {
-    async fn update(&mut self) -> Result<()> {
-        self.client.post(&format!("{}/update", self.base_url))
-            .send()
-            .await?;
-        Ok(())
-    }
-
     async fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>> {
         let response: QueryResponse = self.client.post(&format!("{}/query", self.base_url))
             .json(&QueryRequest {
@@ -250,7 +233,7 @@ impl AsyncDatabase for RemoteDatabase {
     }
 }
 
-// Client that can work with both local and remote databases
+// Network client implementation
 pub struct NetworkClient {
     embedder: BertEmbedder,
     embedding_db: RemoteDatabase,
@@ -264,12 +247,6 @@ impl NetworkClient {
             embedding_db: RemoteDatabase::new(embedding_url),
             encoding_db: RemoteDatabase::new(encoding_url),
         })
-    }
-
-    pub async fn update(&mut self) -> Result<()> {
-        self.encoding_db.update().await?;
-        self.embedding_db.update().await?;
-        Ok(())
     }
 
     fn adjust_embedding(embedding: DVector<BigInt>, m: usize) -> DVector<BigInt> {
@@ -333,44 +310,5 @@ impl NetworkClient {
         );
         
         Ok(result)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::utils::decode_input;
-
-    use super::*;
-    use tokio::test;
-
-    #[test]
-    async fn test_network_client() -> Result<()> {
-        let mut client = NetworkClient::new(
-            "http://localhost:3001".to_string(),
-            "http://localhost:3000".to_string()
-        )?;
-        
-        let names = vec![
-            "Bitcoin USD",
-            "Ethereum USD", 
-            "SPDR S&P 500",
-            "Tesla",
-            "NASDAQ Composite"
-        ];
-        
-        for i in 0..3 {
-            println!("\nUpdate iteration {}...", i + 1);
-            client.update().await?;
-            
-            for name in &names {
-                println!("\nQuerying {}...", name);
-                let result = client.query(name).await?;
-                println!("Raw result: {:?}", result);
-                
-                let output = decode_input(&result)?;
-                println!("Decoded output: {:?}", output);
-            }
-        }
-        Ok(())
     }
 }

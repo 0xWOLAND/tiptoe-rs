@@ -22,7 +22,7 @@ impl<T: Database> DatabaseConnection<T> {
     async fn update(&mut self) -> Result<()> {
         match self {
             Self::Local(db) => db.update(),
-            Self::Remote(db) => db.update().await,
+            Self::Remote(db) => Ok(()),
         }
     }
 
