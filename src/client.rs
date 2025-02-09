@@ -1,35 +1,87 @@
 use std::cmp::Ordering;
-
-use crate::{embedding::BertEmbedder, server::{Database, EmbeddingDatabase, EncodingDatabase}, utils::{decode_data, decode_input}};
 use anyhow::Result;
-use nalgebra::DVector;
+use nalgebra::{DMatrix, DVector};
 use num_bigint::BigInt;
 use num_traits::One;
-use rand::seq::IndexedRandom;
-use serde_json::de;
-use simplepir::{generate_query, recover};
+use simplepir::{generate_query, recover, SimplePIRParams};
 
 
-pub enum DatabaseType {
-    EncodingDatabase,
-    EmbeddingDatabase
+use crate::{
+    embedding::BertEmbedder,
+    network::{AsyncDatabase, RemoteDatabase}, 
+    server::{Database, EmbeddingDatabase, EncodingDatabase},
+};
+
+// Each database can be either local or remote
+pub enum DatabaseConnection<T> {
+    Local(T),
+    Remote(Box<dyn AsyncDatabase>),
 }
 
+impl<T: Database> DatabaseConnection<T> {
+    async fn update(&mut self) -> Result<()> {
+        match self {
+            Self::Local(db) => db.update(),
+            Self::Remote(db) => db.update().await,
+        }
+    }
+
+    async fn respond(&self, query: &DVector<BigInt>) -> Result<DVector<BigInt>> {
+        match self {
+            Self::Local(db) => db.respond(query),
+            Self::Remote(db) => db.respond(query).await,
+        }
+    }
+
+    async fn params(&self) -> Result<SimplePIRParams> {
+        match self {
+            Self::Local(db) => Ok(db.params().clone()),
+            Self::Remote(db) => db.get_params().await,
+        }
+    }
+
+    async fn hint(&self) -> Result<DMatrix<BigInt>> {
+        match self {
+            Self::Local(db) => Ok(db.hint().clone()),
+            Self::Remote(db) => db.get_hint().await,
+        }
+    }
+
+    async fn a(&self) -> Result<DMatrix<BigInt>> {
+        match self {
+            Self::Local(db) => Ok(db.a().clone()),
+            Self::Remote(db) => db.get_a().await,
+        }
+    }
+}
+
+// Unified client that works with both local and remote databases
 pub struct Client {
-    encoding_db: EncodingDatabase,
-    embedding_db: EmbeddingDatabase,
-    embedder: BertEmbedder
+    embedding_db: DatabaseConnection<EmbeddingDatabase>,
+    encoding_db: DatabaseConnection<EncodingDatabase>,
+    embedder: BertEmbedder,
 }
 
 impl Client {
-    pub fn new() -> Self {
-        Self { encoding_db: EncodingDatabase::new(), embedding_db: EmbeddingDatabase::new(), embedder: BertEmbedder::new().unwrap() }
+    pub fn new_local() -> Result<Self> {
+        Ok(Self {
+            embedding_db: DatabaseConnection::Local(EmbeddingDatabase::new()),
+            encoding_db: DatabaseConnection::Local(EncodingDatabase::new()),
+            embedder: BertEmbedder::new()?,
+        })
     }
 
-    pub fn update(&mut self) -> Result<()> {
-        self.encoding_db.update()?;
-        self.embedding_db.update()?;
+    pub fn new_remote(embedding_url: String, encoding_url: String) -> Result<Self> {
+        Ok(Self {
+            embedding_db: DatabaseConnection::Remote(Box::new(RemoteDatabase::new(embedding_url))),
+            encoding_db: DatabaseConnection::Remote(Box::new(RemoteDatabase::new(encoding_url))),
+            embedder: BertEmbedder::new()?,
+        })
+    }
 
+    pub async fn update(&mut self) -> Result<()> {
+        self.encoding_db.update().await?;
+        self.embedding_db.update().await?;
         Ok(())
     }
 
@@ -47,15 +99,27 @@ impl Client {
         }
     }
 
-    pub fn query(&self, query: &str) -> Result<DVector<BigInt>> {
+    pub async fn query(&self, query: &str) -> Result<DVector<BigInt>> {
         let embedding = self.embedder.embed_text(query)?;
-        let m_embedding = self.embedding_db.params().m;
-        let m_encoding = self.encoding_db.params().m;
         
-        let (s_embedding, query_embedding) = generate_query(self.embedding_db.params(), &Self::adjust_embedding(embedding, m_embedding), self.embedding_db.a());
-        let response_embedding = self.embedding_db.respond(&query_embedding)?;
-        let result_embedding: DVector<BigInt> = recover(self.embedding_db.hint(), &s_embedding, &response_embedding, self.embedding_db.params());
+        // Query embedding database
+        let embedding_params = self.embedding_db.params().await?;
+        let adjusted_embedding = Self::adjust_embedding(embedding, embedding_params.m);
+        let (s_embedding, query_embedding) = generate_query(
+            &embedding_params,
+            &adjusted_embedding,
+            &self.embedding_db.a().await?
+        );
         
+        let response_embedding = self.embedding_db.respond(&query_embedding).await?;
+        let result_embedding = recover(
+            &self.embedding_db.hint().await?,
+            &s_embedding,
+            &response_embedding,
+            &embedding_params
+        );
+        
+        // Convert to one-hot vector
         let result_vec = {
             let mut vec = DVector::zeros(result_embedding.len());
             let max_idx = result_embedding.iter()
@@ -67,21 +131,45 @@ impl Client {
             vec
         };
         
-        let (s, query) = generate_query(self.encoding_db.params(), &Self::adjust_embedding(result_vec, m_encoding), self.encoding_db.a());
-        let response = self.encoding_db.respond(&query)?;
-        let result = recover(self.encoding_db.hint(), &s, &response, self.encoding_db.params());
+        // Query encoding database
+        let encoding_params = self.encoding_db.params().await?;
+        let adjusted_result = Self::adjust_embedding(result_vec, encoding_params.m);
+        let (s, query) = generate_query(
+            &encoding_params,
+            &adjusted_result,
+            &self.encoding_db.a().await?
+        );
+        
+        let response = self.encoding_db.respond(&query).await?;
+        let result = recover(
+            &self.encoding_db.hint().await?,
+            &s,
+            &response,
+            &encoding_params
+        );
         
         Ok(result)
     }
 
-    pub fn query_top_k(&self, query: &str, k: usize) -> Result<Vec<DVector<BigInt>>> {
+    pub async fn query_top_k(&self, query: &str, k: usize) -> Result<Vec<DVector<BigInt>>> {
         let embedding = self.embedder.embed_text(query)?;
-        let m_embedding = self.embedding_db.params().m;
-        let m_encoding = self.encoding_db.params().m;
+        let embedding_params = self.embedding_db.params().await?;
+        let encoding_params = self.encoding_db.params().await?;
         
-        let (s_embedding, query_embedding) = generate_query(self.embedding_db.params(), &Self::adjust_embedding(embedding, m_embedding), self.embedding_db.a());
-        let response_embedding = self.embedding_db.respond(&query_embedding)?;
-        let result_embedding: DVector<BigInt> = recover(self.embedding_db.hint(), &s_embedding, &response_embedding, self.embedding_db.params());
+        let (s_embedding, query_embedding) = generate_query(
+            &embedding_params,
+            &Self::adjust_embedding(embedding, embedding_params.m),
+            &self.embedding_db.a().await?
+        );
+        
+        let response_embedding = self.embedding_db.respond(&query_embedding).await?;
+        let result_embedding = recover(
+            &self.embedding_db.hint().await?,
+            &s_embedding,
+            &response_embedding,
+            &embedding_params
+        );
+        
         let top_indices: Vec<usize> = {
             let mut indexed_values: Vec<(usize, &BigInt)> = result_embedding.iter()
                 .enumerate()
@@ -92,231 +180,259 @@ impl Client {
                 .collect()
         };
             
-        Ok(top_indices[0..k].into_iter().map(|&idx| {
+        let mut results = Vec::with_capacity(k);
+        for &idx in top_indices.iter().take(k) {
             let mut vec = DVector::zeros(result_embedding.len());
             vec[idx] = BigInt::one();
 
-            let (s, query) = generate_query(self.encoding_db.params(), &Self::adjust_embedding(vec, m_encoding), self.encoding_db.a());
-            let response = self.encoding_db.respond(&query).unwrap();
-            let result = recover(self.encoding_db.hint(), &s, &response, self.encoding_db.params());
+            let (s, query) = generate_query(
+                &encoding_params,
+                &Self::adjust_embedding(vec, encoding_params.m),
+                &self.encoding_db.a().await?
+            );
+            
+            let response = self.encoding_db.respond(&query).await?;
+            let result = recover(
+                &self.encoding_db.hint().await?,
+                &s,
+                &response,
+                &encoding_params
+            );
 
-            result
-        }).collect())
-    }
-}
-
-#[test]
-fn test_client() {
-    println!("Testing client...");
-    let mut client = Client::new();
-    let k = 3;
-    
-    let names = vec![
-        "Bitcoin USD",
-        "Ethereum USD", 
-        "SPDR S&P 500",
-        "Tesla",
-        "NASDAQ Composite"
-    ];
-    
-    for i in 0..3 {
-        println!("\nUpdate iteration {}...", i + 1);
-        client.update().unwrap();
-        
-        for name in &names {
-            println!("\nQuerying {}...", name);
-            let result: Vec<DVector<BigInt>> = client.query_top_k(name, k).unwrap();
-
-            result.iter().enumerate().for_each(|(i, r)| {
-                let output = decode_input(&r);
-                println!("Decoded {} output: {:?}", i, output);
-            });
+            results.push(result);
         }
+        
+        Ok(results)
     }
 }
 
-#[test]
-fn bench_client_retrieval_accuracy() {
+#[cfg(test)]
+mod tests {
+    use crate::utils::decode_input;
+
+    use super::*;
     use std::collections::HashMap;
-    use rand::seq::SliceRandom;
+    use rand::prelude::IndexedRandom;
     use serde_json::Value;
     use strsim::jaro_winkler;
+    use tokio::test;
 
-    fn names_match(name1: &str, name2: &str) -> bool {
-        let name1 = name1.trim().to_lowercase();
-        let name2 = name2.trim().to_lowercase();
+    async fn run_test_queries(client: &mut Client) -> Result<()> {
+        let names = vec![
+            "Bitcoin",
+            "Ethereum", 
+            "SPDR S&P 500",
+            "Tesla",
+            "NASDAQ Composite"
+        ];
         
-        // Exact match
-        if name1 == name2 {
-            return true;
+        for i in 0..3 {
+            println!("\nUpdate iteration {}...", i + 1);
+            client.update().await?;
+            
+            for name in &names {
+                println!("\nQuerying {}...", name);
+                let result = client.query(name).await?;
+                println!("Raw result: {:?}", result);
+                
+                let output = decode_input(&result)?;
+                println!("Decoded output: {:?}", output);
+            }
         }
-
-        // Check similarity using Jaro-Winkler distance
-        let similarity = jaro_winkler(&name1, &name2);
-        // Threshold of 0.9 means names need to be 90% similar
-        similarity > 0.9
+        Ok(())
     }
 
-    println!("Testing client query acceptance rate for both single and top-k queries...");
-    let mut client = Client::new();
-    let k = 3;
+    #[test]
+    async fn test_local_client() -> Result<()> {
+        let mut client = Client::new_local()?;
+        run_test_queries(&mut client).await
+    }
 
-    let symbols: HashMap<&str, &str> = [
-        ("A", "Agilent"),
-        ("APPL", "Apple"),
-        ("GM", "General Motors Company"),
-        ("MU", "Micron Technology"),
-        ("TSLA", "Tesla"),
-        ("ALI=F", "Aluminum Futures,Apr-2025"),
-        ("CD=F", "Canadian Dollar Dec 20"),
-        ("QM=F", "E-mini Crude Oil Futures,Mar-20"),
-        ("^IXIC", "NASDAQ Composite"),
-        ("EURUSD=X", "EUR/USD"),
-        ("AUDUSD=X", "AUD/USD"),
-        ("^DJT", "Dow Jones Transportation Average"),
-        ("^HSI", "HANG SENG INDEX"),
-        ("^VIX", "CBOE Volatility Index"),
-        ("^TRFK-TC", "Pacer Data and Digital Revolution"),
-        ("SPY", "SPDR S&P 500"),
-        ("AWSHX", "Washington Mutual Invs Fd Cl A"),
-        ("VOO", "Vanguard S&P 500 ETF"),
-        ("XAIX.BE", "Xtr.(IE)-Art.Int.+Big Data ETFR"),
-        ("BTC-USD", "Bitcoin USD"),
-        ("ETH-USD", "Ethereum USD"),
-    ]
-    .iter()
-    .copied()
-    .collect();
+    #[test]
+    async fn test_remote_client() -> Result<()> {
+        let mut client = Client::new_remote(
+            "http://localhost:3001".to_string(),
+            "http://localhost:3000".to_string()
+        )?;
+        run_test_queries(&mut client).await
+    }
 
-    let query_templates = vec![
-        "Tell me about {name}",
-        "What is the latest price of {name}?",
-        "How is {name} performing today?",
-        "Give me details on {name}",
-        "Fetch data for {name}",
-        "What's happening with {name}?",
-    ];
-
-    let mut single_success_count = 0;
-    let mut single_error_count = 0;
-    let mut topk_success_count = 0;
-    let mut topk_error_count = 0;
-    let mut rng = rand::thread_rng();
-
-    for i in 0..3 {
-        println!("\nUpdate iteration {}...", i + 1);
-        client.update().unwrap();
-
-        for (symbol, name) in symbols.iter() {
-            let template = query_templates.choose(&mut rng).unwrap();
-            let query = template.replace("{name}", name);
-
-            println!("\nQuerying: {}", query);
-
-            // Test single query
-            match client.query(&query) {
-                Ok(result) => {
-                    println!("Single query raw result: {:?}", result);
-                    match decode_input(&result) {
-                        Ok(output) => {
-                            println!("Single query decoded output: {:?}", output);
-                            
-                            if let Ok(json_output) = serde_json::from_str::<Value>(&output) {
-                                let received_name = json_output["name"].as_str().unwrap_or("").trim();
-                                
-                                if names_match(received_name, name) {
-                                    single_success_count += 1;
-                                    println!("Single query matched: '{}' with '{}'", received_name, name);
-                                } else {
-                                    single_error_count += 1;
-                                    println!(
-                                        "Single query data mismatch: Expected ({}), but got ({})",
-                                        name, received_name
-                                    );
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            single_error_count += 1;
-                            println!("Single query decoding failed: {:?}", e);
-                        }
-                    }
-                },
-                Err(e) => {
-                    single_error_count += 1;
-                    println!("Single query failed: {:?}", e)
-                }
+    #[test]
+    async fn bench_client_retrieval_accuracy() -> Result<()> {
+        fn names_match(name1: &str, name2: &str) -> bool {
+            let name1 = name1.trim().to_lowercase();
+            let name2 = name2.trim().to_lowercase();
+            
+            // Exact match
+            if name1 == name2 {
+                return true;
             }
 
-            // Test top-k query
-            match client.query_top_k(&query, k) {
-                Ok(results) => {
-                    println!("Top-k query raw results: {:?}", results);
-                    let mut found_match = false;
-                    let mut match_position = None;
+            // Check similarity using Jaro-Winkler distance
+            let similarity = jaro_winkler(&name1, &name2);
+            // Threshold of 0.9 means names need to be 90% similar
+            similarity > 0.9
+        }
 
-                    for (idx, result) in results.iter().enumerate() {
-                        match decode_input(result) {
+        println!("Testing client query acceptance rate for both single and top-k queries...");
+        let mut client = Client::new_local()?;
+        let k = 3;
+
+        let symbols = [
+            "Agilent",
+            "Apple",
+            "General Motors Company",
+            "Micron Technology",
+            "Tesla",
+            "Aluminum Futures,Apr-2025",
+            "Canadian Dollar Dec 20",
+            "E-mini Crude Oil Futures,Mar-20",
+            "NASDAQ Composite",
+            "EUR/USD",
+            "AUD/USD",
+            "Dow Jones Transportation Average",
+            "HANG SENG INDEX",
+            "CBOE Volatility Index",
+            "Pacer Data and Digital Revolution",
+            "SPDR S&P 500",
+            "Washington Mutual Invs Fd Cl A",
+            "Vanguard S&P 500 ETF",
+            "Xtr.(IE)-Art.Int.+Big Data ETFR",
+            "Bitcoin USD",
+            "Ethereum USD",
+        ];
+
+        let query_templates = vec![
+            "Tell me about {name}",
+            "What is the latest price of {name}?",
+            "How is {name} performing today?",
+            "Give me details on {name}",
+            "Fetch data for {name}",
+            "What's happening with {name}?",
+        ];
+
+        let mut single_success_count = 0;
+        let mut single_error_count = 0;
+        let mut topk_success_count = 0;
+        let mut topk_error_count = 0;
+        let mut rng = rand::rng();
+
+        for i in 0..3 {
+            println!("\nUpdate iteration {}...", i + 1);
+            client.update().await?;
+
+            for name in symbols.iter() {
+                let template = query_templates.choose(&mut rng).unwrap();
+                let query = template.replace("{name}", name);
+
+
+                // Test single query
+                match client.query(&query).await {
+                    Ok(result) => {
+                        println!("Single query raw result: {:?}", result);
+                        match decode_input(&result) {
                             Ok(output) => {
-                                println!("Top-k decoded output {}: {:?}", idx, output);
+                                println!("Single query decoded output: {:?}", output);
                                 
                                 if let Ok(json_output) = serde_json::from_str::<Value>(&output) {
                                     let received_name = json_output["name"].as_str().unwrap_or("").trim();
                                     
                                     if names_match(received_name, name) {
-                                        found_match = true;
-                                        match_position = Some(idx);
-                                        println!("Found match at position {}", idx);
-                                        println!("Matched: '{}' with '{}'", received_name, name);
-                                        break;
+                                        single_success_count += 1;
+                                        println!("Single query matched: '{}' with '{}'", received_name, name);
+                                    } else {
+                                        single_error_count += 1;
+                                        println!(
+                                            "Single query data mismatch: Expected ({}), but got ({})",
+                                            name, received_name
+                                        );
                                     }
                                 }
                             },
                             Err(e) => {
-                                println!("Top-k decoding failed for result {}: {:?}", idx, e);
+                                single_error_count += 1;
+                                println!("Single query decoding failed: {:?}", e);
                             }
                         }
+                    },
+                    Err(e) => {
+                        single_error_count += 1;
+                        println!("Single query failed: {:?}", e)
                     }
-
-                    if found_match {
-                        topk_success_count += 1;
-                        println!("Successfully found match at position {:?}", match_position);
-                    } else {
-                        topk_error_count += 1;
-                        println!("Expected name {} not found in top {} results", name, k);
-                        println!("Top-k results: {:?}", results.iter().map(|r| decode_input(r)).collect::<Vec<_>>());
-                    }
-                },
-                Err(e) => {
-                    topk_error_count += 1;
-                    println!("Top-k query failed: {:?}", e)
                 }
+
+                // Test top-k query
+                match client.query_top_k(&query, k).await {
+                    Ok(results) => {
+                        println!("Top-k query raw results: {:?}", results);
+                        let mut found_match = false;
+                        let mut match_position = None;
+
+                        for (idx, result) in results.iter().enumerate() {
+                            match decode_input(result) {
+                                Ok(output) => {
+                                    println!("Top-k decoded output {}: {:?}", idx, output);
+                                    
+                                    if let Ok(json_output) = serde_json::from_str::<Value>(&output) {
+                                        let received_name = json_output["name"].as_str().unwrap_or("").trim();
+                                        
+                                        if names_match(received_name, name) {
+                                            found_match = true;
+                                            match_position = Some(idx);
+                                            println!("Found match at position {}", idx);
+                                            println!("Matched: '{}' with '{}'", received_name, name);
+                                            break;
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    println!("Top-k decoding failed for result {}: {:?}", idx, e);
+                                }
+                            }
+                        }
+
+                        if found_match {
+                            topk_success_count += 1;
+                            println!("Successfully found match at position {:?}", match_position);
+                        } else {
+                            topk_error_count += 1;
+                            println!("Expected name {} not found in top {} results", name, k);
+                            println!("Top-k results: {:?}", results.iter().map(|r| decode_input(r)).collect::<Vec<_>>());
+                        }
+                    },
+                    Err(e) => {
+                        topk_error_count += 1;
+                        println!("Top-k query failed: {:?}", e)
+                    }
+                }
+
+                // Print current stats
+                let single_total = single_success_count + single_error_count;
+                let topk_total = topk_success_count + topk_error_count;
+                
+                println!("\nCurrent Statistics:");
+                println!("Single Query Acceptance Rate: {:.2}%", 
+                    if single_total > 0 { (single_success_count as f64 / single_total as f64) * 100.0 } else { 0.0 });
+                println!("Top-k Query Acceptance Rate: {:.2}%", 
+                    if topk_total > 0 { (topk_success_count as f64 / topk_total as f64) * 100.0 } else { 0.0 });
             }
-
-            // Print current stats
-            let single_total = single_success_count + single_error_count;
-            let topk_total = topk_success_count + topk_error_count;
-            
-            println!("\nCurrent Statistics:");
-            println!("Single Query Acceptance Rate: {:.2}%", 
-                if single_total > 0 { (single_success_count as f64 / single_total as f64) * 100.0 } else { 0.0 });
-            println!("Top-k Query Acceptance Rate: {:.2}%", 
-                if topk_total > 0 { (topk_success_count as f64 / topk_total as f64) * 100.0 } else { 0.0 });
         }
-    }
 
-    println!("\nFinal Statistics:");
-    println!("Single Query:");
-    println!("  Total Attempts: {}", single_success_count + single_error_count);
-    println!("  Successes: {}", single_success_count);
-    println!("  Errors: {}", single_error_count);
-    println!("  Final acceptance rate: {:.2}%", 
-        (single_success_count as f64 / (single_success_count + single_error_count) as f64) * 100.0);
-    
-    println!("\nTop-k Query:");
-    println!("  Total Attempts: {}", topk_success_count + topk_error_count);
-    println!("  Successes: {}", topk_success_count);
-    println!("  Errors: {}", topk_error_count);
-    println!("  Final acceptance rate: {:.2}%", 
-        (topk_success_count as f64 / (topk_success_count + topk_error_count) as f64) * 100.0);
+        println!("\nFinal Statistics:");
+        println!("Single Query:");
+        println!("  Total Attempts: {}", single_success_count + single_error_count);
+        println!("  Successes: {}", single_success_count);
+        println!("  Errors: {}", single_error_count);
+        println!("  Final acceptance rate: {:.2}%", 
+            (single_success_count as f64 / (single_success_count + single_error_count) as f64) * 100.0);
+        
+        println!("\nTop-k Query:");
+        println!("  Total Attempts: {}", topk_success_count + topk_error_count);
+        println!("  Successes: {}", topk_success_count);
+        println!("  Errors: {}", topk_error_count);
+        println!("  Final acceptance rate: {:.2}%", 
+            (topk_success_count as f64 / (topk_success_count + topk_error_count) as f64) * 100.0);
+        
+        Ok(())
+    }
 }
