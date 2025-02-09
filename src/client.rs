@@ -79,7 +79,7 @@ impl Client {
         })
     }
 
-    pub async fn update(&mut self) -> Result<()> {
+    pub(crate) async fn update(&mut self) -> Result<()> {
         self.encoding_db.update().await?;
         self.embedding_db.update().await?;
         Ok(())
@@ -211,7 +211,6 @@ mod tests {
     use crate::utils::decode_input;
 
     use super::*;
-    use std::collections::HashMap;
     use rand::prelude::IndexedRandom;
     use serde_json::Value;
     use strsim::jaro_winkler;
@@ -228,8 +227,6 @@ mod tests {
         
         for i in 0..3 {
             println!("\nUpdate iteration {}...", i + 1);
-            client.update().await?;
-            
             for name in &names {
                 println!("\nQuerying {}...", name);
                 let result = client.query(name).await?;

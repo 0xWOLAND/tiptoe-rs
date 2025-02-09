@@ -10,8 +10,8 @@ use nalgebra::{DMatrix, DVector};
 use num_bigint::BigInt;
 use num_traits::One;
 use serde::{Serialize, Deserialize};
-use std::{str::FromStr, sync::Arc};
-use tokio::sync::RwLock;
+use std::{str::FromStr, sync::Arc, time::Duration};
+use tokio::{sync::RwLock, time::interval};
 use anyhow::Result;
 use reqwest::Client as HttpClient;
 use simplepir::{SimplePIRParams, generate_query, recover, gen_params};
@@ -99,10 +99,25 @@ pub async fn run_server<T: Database + Send + Sync + 'static>(db: T, port: u16) {
     let state = Arc::new(ServerState {
         db: RwLock::new(db),
     });
+    
+    let update_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_secs(5)); // Update every minute
+        loop {
+            interval.tick().await;
+            println!("Updating database...");
+            let mut db = update_state.db.write().await;
+                if let Err(e) = db.update() {
+                    eprintln!("Error updating database: {:?}", e);
+                }
+            if let Err(e) = db.update() {
+                eprintln!("Error updating database: {:?}", e);
+            }
+        }
+    });
 
     let app = Router::new()
         .route("/query", post(handle_query::<T>))
-        .route("/update", post(handle_update::<T>))
         .route("/params", get(handle_params::<T>))
         .route("/hint", get(handle_hint::<T>))
         .route("/a", get(handle_a::<T>))
@@ -116,6 +131,7 @@ pub async fn run_server<T: Database + Send + Sync + 'static>(db: T, port: u16) {
         .await
         .unwrap();
 }
+
 
 async fn handle_query<T: Database + Send + Sync>(
     State(state): State<Arc<ServerState<T>>>,
