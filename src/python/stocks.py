@@ -22,13 +22,13 @@ if response.status_code == 200:
     
     results = [
         {
-            # "symbol": item.get("symbol", "N/A"),
+            # "symbol": item.get("symbol", "N/A"), # removing the symbol improved the accuracy of retrieval (try to maximize the difference between the search terms)
             "name": item.get("displayName", item.get("shortName", item.get("longName", "N/A"))),
             "currentPrice": item.get("regularMarketPrice", "N/A"),
         }
         for item in data.get("body", [])
     ]
-    print(str(results).replace("'", '"'))
+    print(str(results * 3).replace("'", '"'))
 
 else:
     print(f"Failed to fetch data: {response.status_code}")

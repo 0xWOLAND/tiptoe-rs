@@ -4,7 +4,8 @@
 - Posisbly use fixed-size arithmetic instead of `BigInt`
     - I ran into overflow problems when computing the inner product of the embeddings, so this might not be possible
     - Use faster matrix-multiplication algorithms
-        - Use `nalgebra`'s built-in sparse matrix multiplication
+        - Use `nalgebra`'s built-in sparse finite field matrix multiplication
+            - Use `ark-ff` for finite field arithmetic
         - Rayon? -- parallel-computing based matmul
 - More efficient matrix packing mechanism
     - Currently this pads the matrix of embeddings and encodings with zeros to be a square
