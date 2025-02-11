@@ -85,34 +85,51 @@ fn deserialize_params(data: &ParamsData) -> SimplePIRParams {
     gen_params(data.m, data.n, mod_power)
 }
 
-// Server setup and handlers
 pub async fn run_server<T: Database + Send + Sync + 'static>(db: T, port: u16) {
     let state = Arc::new(ServerState {
         db: RwLock::new(db),
     });
 
-    // Spawn a task to handle periodic updates
     let update_state = Arc::clone(&state);
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_secs(60)); // Update every minute
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
         loop {
             interval.tick().await;
-            println!("Updating database...");
-            let mut db = update_state.db.write().await;
-            if let Err(e) = db.update() {
-                eprintln!("Error updating database: {:?}", e);
+            println!("Starting database update...");
+
+            let new_db = match tokio::task::spawn_blocking(|| {
+                // Build a new instance using T::new() followed by T::update()
+                T::new().and_then(|mut instance| {
+                    instance.update()?;
+                    Ok(instance)
+                })
+            })
+            .await
+            {
+                Ok(Ok(new_instance)) => new_instance,
+                Ok(Err(e)) => {
+                    eprintln!("Error building new database: {:?}", e);
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("Blocking task panicked: {:?}", e);
+                    continue;
+                }
+            };
+
+            {
+                let mut db_lock = update_state.db.write().await;
+                *db_lock = new_db;
             }
-            if let Err(e) = db.update() {
-                eprintln!("Error updating database: {:?}", e);
-            }
+            println!("Database update complete!");
         }
     });
 
     let app = Router::new()
-        .route("/query", post(handle_query::<T>))
-        .route("/params", get(handle_params::<T>))
-        .route("/hint", get(handle_hint::<T>))
-        .route("/a", get(handle_a::<T>))
+        .route("/query", axum::routing::post(handle_query::<T>))
+        .route("/params", axum::routing::get(handle_params::<T>))
+        .route("/hint", axum::routing::get(handle_hint::<T>))
+        .route("/a", axum::routing::get(handle_a::<T>))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
